@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 专注记录只存在 App 私有 localStorage，明确关掉系统备份（不传 Google/云端）。
+         注：删掉这一行等于 true（官方默认值），所以要关必须显式写 false。
+         Android 12+ 即便 false，部分厂商仍允许换机本机迁移（D2D），那不出设备。 -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- 专注计时前台服务：锁屏 + 通知栏常驻计时卡 -->
+        <service
+            android:name=".TimerNotifyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="focus-timer-display" />
+        </service>
+    </application>
+
+    <!-- Permissions
+         刻意不声明 INTERNET：Capacitor 的 https://localhost 由原生 scheme handler
+         内存拦截、从 APK 资源里读文件，不监听任何端口也不发任何网络请求。
+         App 全程离线，少一个权限就少一条「能不能偷偷联网」的疑点。 -->
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+</manifest>

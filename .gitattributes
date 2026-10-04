@@ -1,0 +1,24 @@
+# 统一按 LF 存取：避免 Windows / Linux 混编时整仓 diff 抖动
+* text=auto eol=lf
+
+# 批处理必须 CRLF，否则 cmd.exe 在部分跳转/多行块上会解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制，不做换行/文本转换
+*.apk binary
+*.aar binary
+*.aab binary
+*.dex binary
+*.class binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.wav binary

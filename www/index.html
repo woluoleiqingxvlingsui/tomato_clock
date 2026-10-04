@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#fdf3f2">
+<meta name="format-detection" content="telephone=no">
+<title>番茄钟</title>
+<style>
+:root{
+  --card:rgba(255,255,255,.66);
+  --card-border:rgba(255,255,255,.85);
+  --text:#3d3a3a;
+  --muted:#9a9290;
+  --accent:#ff6b6b;
+  --accent-deep:#f5544d;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{background:#f3efee}
+html,body{height:100%}
+body{
+  font-family:-apple-system,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  color:var(--text);
+  background:linear-gradient(160deg,#fdf3f2,#fdf8ef 45%,#eef4ff) fixed;
+  max-width:480px;margin:0 auto;min-height:100dvh;
+  position:relative;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+  touch-action:manipulation;overscroll-behavior-y:none;
+  -webkit-user-select:none;user-select:none;
+}
+input{-webkit-user-select:text;user-select:text}
+button{font-family:inherit}
+
+.blob{position:fixed;border-radius:50%;filter:blur(70px);z-index:-1;opacity:.6;pointer-events:none}
+.blob-a{width:300px;height:300px;background:#ffd9d2;top:-80px;left:-70px}
+.blob-b{width:340px;height:340px;background:#d9e4ff;bottom:-110px;right:-90px}
+
+/* ---------- 页面 ---------- */
+.page{display:none;padding:22px 18px calc(112px + env(safe-area-inset-bottom))}
+.page.active{display:block;animation:fadeUp .25s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.hidden{display:none!important}
+
+/* ---------- 专注页 ---------- */
+#focus-idle{min-height:calc(100dvh - 190px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.hero-title{font-size:21px;font-weight:600;color:#5a5352;letter-spacing:2px}
+.hero-sub{font-size:13px;color:var(--muted);margin-top:-10px}
+.big-start{
+  width:186px;height:186px;border-radius:50%;border:none;cursor:pointer;
+  background:linear-gradient(145deg,#ff8577,#f5544d);color:#fff;
+  font-size:21px;font-weight:600;letter-spacing:3px;text-indent:3px;
+  box-shadow:0 20px 44px rgba(245,84,77,.34),inset 0 -8px 16px rgba(0,0,0,.09),inset 0 6px 12px rgba(255,255,255,.25);
+  transition:transform .15s ease;
+}
+.big-start:active{transform:scale(.94)}
+
+#focus-running{min-height:calc(100dvh - 190px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px}
+.run-task{
+  display:inline-flex;align-items:center;gap:8px;max-width:84vw;
+  background:var(--card);border:1px solid var(--card-border);backdrop-filter:blur(14px);
+  border-radius:999px;padding:9px 18px;font-size:14px;color:#5a5352;
+}
+.run-task .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.run-task span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run-time{font-size:66px;font-weight:700;letter-spacing:2px;font-variant-numeric:tabular-nums;color:var(--text);transition:color .2s;line-height:1.1}
+.run-time.paused{color:#c2baba}
+.run-hint{font-size:12px;color:var(--muted)}
+.run-actions{display:flex;gap:14px;margin-top:26px;width:100%;max-width:320px}
+.btn{flex:1;height:52px;border-radius:26px;border:none;font-size:16px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .2s;min-width:0}
+.btn:active{transform:scale(.96)}
+.btn-ghost{background:rgba(255,255,255,.72);border:1px solid rgba(0,0,0,.06);color:#5a5352;backdrop-filter:blur(10px)}
+.btn-danger{background:linear-gradient(145deg,#ff8577,#f5544d);color:#fff;box-shadow:0 10px 24px rgba(245,84,77,.3)}
+
+/* ---------- 统计页 ---------- */
+.ov-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.ov{background:var(--card);border:1px solid var(--card-border);backdrop-filter:blur(18px);border-radius:18px;padding:13px 15px;box-shadow:0 6px 20px rgba(180,120,110,.07)}
+.ov .lab{font-size:12px;color:var(--muted)}
+.ov .val{font-size:21px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;color:#4d4645}
+.ov .sub{font-size:10.5px;color:var(--muted);margin-top:2px}
+.ov.today .val{color:var(--accent-deep)}
+
+.card{background:var(--card);border:1px solid var(--card-border);backdrop-filter:blur(18px);border-radius:22px;padding:16px;margin-bottom:14px;box-shadow:0 8px 28px rgba(180,120,110,.08)}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:8px}
+.card-title{font-size:15px;font-weight:600;color:#4d4645;flex:none}
+.card-note{font-size:12px;color:var(--muted)}
+.seg{display:flex;background:rgba(0,0,0,.055);border-radius:11px;padding:3px;gap:2px;flex:none}
+.seg button{border:none;background:none;font-size:12px;color:#8d8685;padding:5px 13px;border-radius:9px;cursor:pointer;transition:.15s}
+.seg button.on{background:#fff;color:var(--accent-deep);font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,.07)}
+
+.chart-box{position:relative;height:212px}
+.chart-box canvas{width:100%!important;height:100%!important}
+.chart-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center}
+
+.legend{list-style:none;margin-top:14px;display:flex;flex-direction:column;gap:9px}
+.legend li{display:flex;align-items:center;gap:9px;font-size:13px}
+.legend .dot{width:10px;height:10px;border-radius:4px;flex:none}
+.legend .nm{flex:1;color:#4d4645;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend .dur{color:#4d4645;font-weight:600;font-variant-numeric:tabular-nums}
+.legend .pct{color:var(--muted);font-size:12px;width:36px;text-align:right;font-variant-numeric:tabular-nums}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:none;border-radius:999px;padding:8px 15px;font-size:13px;background:rgba(0,0,0,.055);color:#5f5857;cursor:pointer;transition:.15s;display:inline-flex;align-items:center}
+.chip.on{color:#fff!important;box-shadow:0 4px 10px rgba(0,0,0,.13);font-weight:500}
+.chip-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+#trend-chips{margin-bottom:4px}
+.mg-btn{display:block;margin:10px 2px 0 auto;border:none;background:none;font-size:12px;color:var(--muted);cursor:pointer;padding:2px 4px}
+.mg-list{list-style:none;max-height:240px;overflow:auto;margin:4px 0}
+.mg-list li{display:flex;align-items:center;gap:9px;padding:9px 2px;border-bottom:1px dashed rgba(0,0,0,.06)}
+.mg-list li:last-child{border-bottom:none}
+.mg-list .nm{flex:1;font-size:14px;color:#4d4645;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mg-empty{justify-content:center;color:var(--muted);font-size:13px;border:none!important}
+
+.records{list-style:none;display:flex;flex-direction:column}
+.records li{display:flex;align-items:center;gap:11px;padding:11px 0;border-bottom:1px dashed rgba(0,0,0,.06)}
+.records li:last-child{border-bottom:none}
+.rec-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.rec-main{flex:1;min-width:0}
+.rec-name{font-size:14px;color:#4d4645;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+.rec-dur{font-size:14px;font-weight:600;color:#4d4645;font-variant-numeric:tabular-nums;flex:none}
+.rec-del,.rec-edit{border:none;background:none;color:#cdc6c5;width:30px;height:30px;border-radius:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:none}
+.rec-del:active{background:rgba(0,0,0,.05);color:#e07070}
+.rec-edit:active{background:rgba(0,0,0,.05);color:#7a9df0}
+
+/* ---------- 底部导航 ---------- */
+#tabbar{
+  position:fixed;left:0;right:0;bottom:0;margin:0 auto;max-width:480px;display:flex;z-index:50;
+  background:rgba(255,255,255,.85);backdrop-filter:blur(20px);
+  border-top:1px solid rgba(0,0,0,.05);
+  padding:8px 0 calc(9px + env(safe-area-inset-bottom));
+}
+#tabbar button{flex:1;background:none;border:none;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:#a8a1a0;padding:4px 0;cursor:pointer;transition:color .2s}
+#tabbar button.on{color:var(--accent-deep);font-weight:600}
+#tabbar svg{width:23px;height:23px}
+
+/* ---------- 弹层 ---------- */
+.overlay{position:fixed;inset:0;background:rgba(50,38,38,.42);z-index:100;opacity:0;visibility:hidden;transition:.25s}
+.overlay.open{opacity:1;visibility:visible}
+.sheet{
+  position:absolute;left:0;right:0;bottom:0;max-width:480px;margin:0 auto;
+  background:#fffdfb;border-radius:26px 26px 0 0;
+  padding:24px 22px calc(28px + env(safe-area-inset-bottom));
+  transform:translateY(105%);transition:transform .28s cubic-bezier(.32,.72,.35,1);
+}
+.overlay.open .sheet{transform:none}
+.sheet h3{font-size:17px;margin-bottom:14px;color:#4d4645}
+.task-input{width:100%;height:48px;border-radius:14px;border:1.5px solid rgba(0,0,0,.08);background:#fff;padding:0 15px;font-size:15px;outline:none;transition:border-color .2s;color:var(--text)}
+.task-input:focus{border-color:var(--accent)}
+.task-input::placeholder{color:#c0b9b8}
+.sheet .chips{margin:14px 0 2px}
+.btn-primary{width:100%;height:50px;border:none;border-radius:16px;margin-top:16px;background:linear-gradient(145deg,#ff8577,#f5544d);color:#fff;font-size:16px;font-weight:600;box-shadow:0 10px 22px rgba(245,84,77,.28);cursor:pointer;transition:transform .15s}
+.btn-primary:active{transform:scale(.97)}
+
+.dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-46%) scale(.95);width:min(86%,330px);background:#fffdfb;border-radius:22px;padding:24px 22px;opacity:0;transition:.22s;text-align:center}
+.overlay.open .dialog{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.dialog h3{font-size:17px;color:#4d4645;margin-bottom:4px}
+.dialog .big{font-size:30px;font-weight:700;color:var(--accent-deep);margin:8px 0 2px;font-variant-numeric:tabular-nums}
+.dialog p{font-size:13px;color:var(--muted);margin-bottom:20px}
+.dialog-actions{display:flex;gap:12px}
+.dialog .btn{padding:0 10px}
+
+#toast{
+  position:fixed;left:50%;bottom:calc(104px + env(safe-area-inset-bottom));
+  transform:translateX(-50%) translateY(8px);
+  background:rgba(50,42,42,.92);color:#fff;font-size:13px;padding:10px 18px;border-radius:999px;
+  opacity:0;transition:.25s;z-index:200;pointer-events:none;max-width:80vw;text-align:center;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="blob blob-a"></div>
+<div class="blob blob-b"></div>
+
+<!-- ================= 专注页 ================= -->
+<main id="page-focus" class="page active">
+  <section id="focus-idle">
+    <div class="hero-title">番茄钟</div>
+    <p class="hero-sub">准备好就开始吧</p>
+    <button id="btn-start" class="big-start">开始专注</button>
+  </section>
+  <section id="focus-running" class="hidden">
+    <div class="run-task"><span class="dot" id="run-dot"></span><span id="run-name">专注</span></div>
+    <div class="run-time" id="run-time">00:00:00</div>
+    <div class="run-hint" id="run-hint"></div>
+    <div class="run-actions">
+      <button id="btn-pause" class="btn btn-ghost">暂停</button>
+      <button id="btn-end" class="btn btn-danger">结束</button>
+    </div>
+  </section>
+</main>
+
+<!-- ================= 统计页 ================= -->
+<main id="page-stats" class="page">
+  <div class="ov-grid" id="ov-grid"></div>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">事项分布</span>
+      <div class="seg" id="seg-pie">
+        <button data-v="day" class="on">今日</button><button data-v="month">本月</button><button data-v="year">今年</button>
+      </div>
+    </div>
+    <div class="chart-box">
+      <canvas id="pie-canvas"></canvas>
+      <div class="chart-empty hidden" id="pie-empty">这个范围还没有专注记录</div>
+    </div>
+    <ul class="legend" id="pie-legend"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">专注趋势</span>
+      <div class="seg" id="seg-trend">
+        <button data-v="day" class="on">按日</button><button data-v="week">按周</button><button data-v="month">按月</button>
+      </div>
+    </div>
+    <div class="chips" id="trend-chips"></div>
+    <div class="chart-box" style="margin-top:12px;height:200px">
+      <canvas id="line-canvas"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">专注记录</span>
+      <span class="card-note" id="rec-count"></span>
+    </div>
+    <ul class="records" id="rec-list"></ul>
+    <div class="chart-empty hidden" id="rec-empty" style="position:static;padding:20px 0 10px">还没有专注记录，去开始第一次专注吧</div>
+  </section>
+</main>
+
+<!-- ================= 底部导航 ================= -->
+<nav id="tabbar">
+  <button data-tab="focus" class="on">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"/></svg>
+    专注
+  </button>
+  <button data-tab="stats">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 20v-8M12 20V4M19 20V9"/></svg>
+    统计
+  </button>
+</nav>
+
+<!-- ================= 开始弹层 ================= -->
+<div class="overlay" id="sheet">
+  <div class="sheet">
+    <h3>这次专注什么？</h3>
+    <input id="task-input" class="task-input" placeholder="输入专注事项，如：科研" maxlength="20">
+    <div class="chips" id="recent-chips"></div>
+    <button id="btn-manage" class="mg-btn hidden" type="button">管理</button>
+    <button id="btn-go" class="btn-primary">开始专注</button>
+  </div>
+</div>
+
+<!-- ================= 结束确认 ================= -->
+<div class="overlay" id="dlg-end">
+  <div class="dialog">
+    <h3>确定结束这次专注吗？</h3>
+    <div class="big" id="end-dur">0分钟</div>
+    <p id="end-task"></p>
+    <div class="dialog-actions">
+      <button id="btn-keep" class="btn btn-ghost">继续专注</button>
+      <button id="btn-finish" class="btn btn-danger">确认结束</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 删除确认 ================= -->
+<div class="overlay" id="dlg-del">
+  <div class="dialog">
+    <h3>删除这条记录？</h3>
+    <p id="del-text"></p>
+    <div class="dialog-actions">
+      <button id="btn-del-no" class="btn btn-ghost">取消</button>
+      <button id="btn-del-yes" class="btn btn-danger">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 修改名称 ================= -->
+<div class="overlay" id="dlg-rename">
+  <div class="dialog">
+    <h3>修改事项名称</h3>
+    <p id="rename-text" style="margin-bottom:12px"></p>
+    <input id="rename-input" class="task-input" maxlength="20" placeholder="输入新的名称">
+    <div class="dialog-actions" style="margin-top:18px">
+      <button id="btn-rename-no" class="btn btn-ghost">取消</button>
+      <button id="btn-rename-yes" class="btn btn-danger">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 管理快捷事项 ================= -->
+<div class="overlay" id="dlg-manage">
+  <div class="dialog" style="text-align:left">
+    <h3>管理快捷事项</h3>
+    <p style="margin-bottom:8px;text-align:left">删除开始专注时不需要的快捷选项，不影响已有专注记录</p>
+    <ul class="mg-list" id="manage-list"></ul>
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="btn-manage-clear" class="btn btn-ghost">清空</button>
+      <button id="btn-manage-ok" class="btn btn-danger">完成</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="chart.umd.js"></script>
+<script>
+"use strict";
+/* ============ 存储 ============ */
+const store={
+  fail:false, // 最近一次写入失败过（无痕模式 / file:// 受限 / 配额满）：此后"已记录"都不可信
+  get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v));store.fail=false}catch(e){store.fail=true}},
+  del(k){try{localStorage.removeItem(k)}catch(e){}}
+};
+/* localStorage 是不是真能用：无痕模式、某些浏览器的 file:// 下写入会静默失败，
+   界面却一切正常，等于专注记录在无声蒸发。启动时先探一次，别等丢完才知道。 */
+const storageOK=(function(){try{localStorage.setItem("tomato.probe","1");localStorage.removeItem("tomato.probe");return true}catch(e){return false}})();
+const KEY={
+  sessions:"tomato.sessions",   // 已完成的专注记录
+  ongoing:"tomato.ongoing",     // 正在进行的专注（开始/暂停/恢复时立即写盘，保证后台/杀进程可恢复）
+  recent:"tomato.recentTasks",  // 最近用过的事项（快速选择）
+  migrated:"tomato.migratedV2",
+  legacy:"tomato.records"       // 旧桌面版（倒计时）的数据
+};
+
+/* ============ 调色板：按事项名哈希固定取色，同一事项永远同色 ============ */
+const PALETTE=["#ff6b6b","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16","#a855f7","#64748b"];
+function colorFor(name){
+  let h=0;for(const ch of String(name))h=(h*31+ch.codePointAt(0))>>>0;
+  return PALETTE[h%PALETTE.length];
+}
+
+/* ============ 日期工具 ============ */
+const pad2=n=>n<10?"0"+n:String(n);
+function dateStr(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())}
+function parseDate(str){const p=String(str||"").split("-").map(Number);return new Date(p[0]||1970,(p[1]||1)-1,p[2]||1)}
+function mondayOf(d){const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-((x.getDay()+6)%7));return x}
+function monthStr(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)}
+
+/* ============ 数据 ============ */
+let sessions=store.get(KEY.sessions,[]);
+let ongoing=store.get(KEY.ongoing,null);
+let recentTasks=store.get(KEY.recent,[]);
+let pieRange="day",trendGran="day",trendTask=null;
+let pieChart=null,lineChart=null,delTargetId=null,toastTimer=null;
+
+const saveSessions=()=>store.set(KEY.sessions,sessions);
+const saveOngoing=()=>ongoing?store.set(KEY.ongoing,ongoing):store.del(KEY.ongoing);
+const saveRecent=()=>store.set(KEY.recent,recentTasks);
+
+/* ============ 锁屏/通知栏计时卡（原生前台服务；电脑浏览器里为空操作） ============ */
+const TimerSvc=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())?window.Capacitor.Plugins.TimerService:null;
+function svcCall(method,arg){
+  if(!TimerSvc)return;
+  try{
+    const p=arg===undefined?TimerSvc[method]():TimerSvc[method](arg);
+    if(p&&p.catch)p.catch(()=>{});
+  }catch(e){}
+}
+function svcSyncState(){
+  if(!ongoing){svcCall("stop");return}
+  // 数值必须传字符串：原生侧 getDouble 对大整数（桥上解析为 Long）返回 null，会把通知计时归零
+  svcCall("sync",{
+    taskName:ongoing.taskName,
+    startTs:String(ongoing.startTs),
+    pausedAccumMs:String(ongoing.pausedAccumMs),
+    pausedAt:String(ongoing.pausedAt||-1)
+  });
+}
+
+/* 旧桌面版（倒计时）记录一次性迁移为新格式 */
+(function migrate(){
+  if(store.get(KEY.migrated,false))return;
+  const old=store.get(KEY.legacy,null);
+  if(Array.isArray(old)&&old.length){
+    const add=[];
+    for(const r of old){
+      if(!r||r.type!=="work")continue;
+      const dur=Math.max(0,(r.minutes||0)*60000),ts=r.ts||Date.now();
+      add.push({id:"mig-"+(r.id||ts),taskName:r.taskName||"专注",startTs:ts,endTs:ts+dur,durationMs:dur,date:r.date||dateStr(new Date(ts))});
+    }
+    if(add.length){sessions=sessions.concat(add);saveSessions();}
+  }
+  store.set(KEY.migrated,true);
+})();
+
+/* ============ 格式化 ============ */
+function fmtClock(ms){
+  ms=Math.max(0,ms);const s=Math.floor(ms/1000);
+  return pad2(Math.floor(s/3600))+":"+pad2(Math.floor(s/60)%60)+":"+pad2(s%60);
+}
+function fmtDur(ms){
+  ms=Math.max(0,ms);const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),ss=s%60;
+  if(h>0)return h+"小时"+(m%60?m%60+"分":"")+(ss?ss+"秒":"");
+  if(m>0)return ss>0?m+"分"+ss+"秒":m+"分钟";
+  return ss+"秒";
+}
+function fmtCard(ms){
+  if(ms<=0)return"0:00";
+  const s=Math.round(ms/1000),h=Math.floor(s/3600),m=Math.floor(s/60)%60,sec=s%60;
+  if(h>0)return h+":"+pad2(m)+":"+pad2(sec);
+  return Math.floor(s/60)+":"+pad2(sec);
+}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")"}
+
+/* ============ 专注计时 ============ */
+const $=s=>document.querySelector(s);
+const idleSec=$("#focus-idle"),runSec=$("#focus-running");
+const sheet=$("#sheet"),dlgEnd=$("#dlg-end"),dlgDel=$("#dlg-del"),dlgRename=$("#dlg-rename"),dlgManage=$("#dlg-manage"),taskInput=$("#task-input");
+
+/* 核心：已专注时长 = 当前时间 - 开始时间 - 暂停累计，与 setInterval 无关，
+   切后台/锁屏/页面被冻结都不会影响准确性 */
+function elapsedMs(){
+  if(!ongoing)return 0;
+  const now=ongoing.pausedAt||Date.now();
+  return Math.max(0,now-ongoing.startTs-ongoing.pausedAccumMs);
+}
+
+function enterRunning(){
+  idleSec.classList.add("hidden");runSec.classList.remove("hidden");
+  $("#run-name").textContent=ongoing.taskName;
+  $("#run-dot").style.background=colorFor(ongoing.taskName);
+  updateRunUI();
+}
+function enterIdle(){
+  runSec.classList.add("hidden");idleSec.classList.remove("hidden");
+}
+function updateRunUI(){
+  if(!ongoing)return;
+  const paused=!!ongoing.pausedAt;
+  $("#run-time").classList.toggle("paused",paused);
+  $("#btn-pause").textContent=paused?"继续":"暂停";
+  const st=new Date(ongoing.startTs);
+  $("#run-hint").textContent=paused?"已暂停":("开始于 "+pad2(st.getHours())+":"+pad2(st.getMinutes()));
+  renderRunTime();
+}
+function renderRunTime(){
+  if(ongoing&&!runSec.classList.contains("hidden"))$("#run-time").textContent=fmtClock(elapsedMs());
+}
+setInterval(renderRunTime,250);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)renderRunTime()});
+
+/* ---- 开始弹层 ---- */
+function openSheet(){
+  if(ongoing){enterRunning();return}
+  renderRecentChips();
+  taskInput.value="";
+  sheet.classList.add("open");
+  setTimeout(()=>taskInput.focus(),150);
+}
+function closeSheet(){sheet.classList.remove("open");taskInput.blur()}
+function renderRecentChips(){
+  const box=$("#recent-chips");box.innerHTML="";
+  $("#btn-manage").classList.toggle("hidden",!recentTasks.length);
+  if(!recentTasks.length){box.style.display="none";return}
+  box.style.display="flex";
+  for(const n of recentTasks){
+    const b=document.createElement("button");
+    b.className="chip";b.type="button";
+    b.innerHTML='<span class="chip-dot" style="background:'+colorFor(n)+'"></span>'+esc(n);
+    b.onclick=()=>{taskInput.value=n;goStart()};
+    box.appendChild(b);
+  }
+}
+function goStart(){
+  if(ongoing){closeSheet();enterRunning();return}
+  const name=taskInput.value.trim()||"专注";
+  ongoing={taskName:name,startTs:Date.now(),pausedAccumMs:0,pausedAt:null,pauseLog:[]};
+  saveOngoing();
+  recentTasks=[name,...recentTasks.filter(n=>n!==name)].slice(0,8);
+  saveRecent();
+  svcCall("start",{taskName:name,startTs:String(ongoing.startTs),pausedAccumMs:"0",pausedAt:"-1"});
+  closeSheet();enterRunning();vibrate(20);beep("start");
+}
+
+/* ---- 暂停 / 结束 ---- */
+function togglePause(){
+  if(!ongoing)return;
+  if(ongoing.pausedAt){
+    const now=Date.now();
+    (ongoing.pauseLog=ongoing.pauseLog||[]).push({from:ongoing.pausedAt,to:now});
+    ongoing.pausedAccumMs+=now-ongoing.pausedAt;
+    ongoing.pausedAt=null;
+  }else{
+    ongoing.pausedAt=Date.now();
+  }
+  saveOngoing();svcSyncState();updateRunUI();vibrate(15);
+}
+function requestEnd(){
+  if(!ongoing)return;
+  $("#end-dur").textContent=fmtDur(elapsedMs());
+  $("#end-task").textContent="「"+ongoing.taskName+"」本次专注";
+  dlgEnd.classList.add("open");
+}
+/* 结束时按本地零点把跨日专注拆成多条记录（每天一笔账）：
+   每段扣除落在该段内的暂停时间，各段之和=本次总专注时长，秒级无损 */
+function finishEnd(){
+  if(!ongoing)return;
+  const dur=elapsedMs();
+  const endTs=ongoing.pausedAt||Date.now();
+  const taskName=ongoing.taskName,startTs=ongoing.startTs;
+  const pauses=ongoing.pauseLog;
+  const pauseIn=(a,b)=>{let t=0;for(const p of pauses){const s=Math.max(p.from,a),e=Math.min(p.to,b);if(e>s)t+=e-s}return t};
+  const gid=uid(); // 同一次专注各拆分段共用的组号，改名时一并更新
+  const before=sessions.length;
+  dlgEnd.classList.remove("open");
+  if(pauses){ // 新版会话带暂停明细，按零点精确拆分
+    let cur=startTs;
+    while(cur<endTs){
+      const d=new Date(cur);
+      const midnight=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime();
+      const segEnd=Math.min(endTs,midnight);
+      const f=segEnd-cur-pauseIn(cur,segEnd);
+      if(f>0)sessions.push({id:uid(),gid,taskName,startTs:cur,endTs:segEnd,durationMs:f,date:dateStr(new Date(cur))});
+      cur=segEnd;
+    }
+  }else if(dur>0){ // 升级前开始的旧会话没有暂停明细，退回单条记录，保证时长准确
+    sessions.push({id:uid(),gid,taskName,startTs,endTs,durationMs:dur,date:dateStr(new Date(startTs))});
+  }
+  saveSessions();
+  ongoing=null;saveOngoing();enterIdle();
+  svcCall("stop");
+  vibrate(30);beep("end");
+  // 三种结局只提示一次，避免连续 toast 互相顶掉：
+  // 写盘失败 > 一条没拆出来（全程暂停） > 正常记录成功
+  toast(store.fail?"⚠ 没能保存到本机（浏览器禁用了本地存储），本次专注未记录"
+    :(sessions.length>before?("已记录专注 "+fmtDur(dur)):"本次没有产生记录（全程处于暂停）"));
+}
+
+/* ============ Tab 切换 ============ */
+function switchTab(t){
+  document.querySelectorAll("#tabbar button").forEach(b=>b.classList.toggle("on",b.dataset.tab===t));
+  $("#page-focus").classList.toggle("active",t==="focus");
+  $("#page-stats").classList.toggle("active",t==="stats");
+  if(t==="stats")renderStats();
+}
+
+/* ============ 统计 ============ */
+function sessionsInRange(kind){
+  const now=new Date();
+  if(kind==="day")return sessions.filter(s=>s.date===dateStr(now));
+  if(kind==="month")return sessions.filter(s=>(s.date||"").startsWith(monthStr(now)));
+  return sessions.filter(s=>(s.date||"").startsWith(String(now.getFullYear())));
+}
+function groupByTask(list){
+  const map=new Map();
+  for(const s of list){const n=s.taskName||"专注";map.set(n,(map.get(n)||0)+s.durationMs)}
+  return [...map.entries()].map(([name,ms])=>({name,ms})).sort((a,b)=>b.ms-a.ms);
+}
+function renderOverview(){
+  const now=new Date(),today=dateStr(now),wk=dateStr(mondayOf(now)),mh=monthStr(now);
+  const sum=list=>list.reduce((a,s)=>a+s.durationMs,0);
+  const items=[
+    ["今日",sum(sessions.filter(s=>s.date===today))],
+    ["本周",sum(sessions.filter(s=>s.date>=wk&&s.date<=today))],
+    ["本月",sum(sessions.filter(s=>(s.date||"").startsWith(mh)))],
+    ["累计",sum(sessions)]
+  ];
+  $("#ov-grid").innerHTML=items.map(([l,v],i)=>
+    '<div class="ov'+(i===0?" today":"")+'"><div class="lab">'+l+'</div><div class="val">'+fmtCard(v)+"</div></div>"
+  ).join("")
+  // 日均：总专注 ÷ 有专注记录的天数（没专注的日子不拉低平均值）
+  +(function(){
+    const days=new Set(sessions.map(s=>s.date).filter(Boolean)).size;
+    const avg=days?sum(sessions)/days:0;
+    return '<div class="ov" style="grid-column:1/-1"><div class="lab">日均专注</div><div class="val">'+fmtCard(avg)
+      +'</div><div class="sub">'+(days?"按 "+days+" 个有专注的天数平均":"还没有专注记录")+"</div></div>";
+  })();
+}
+
+/* ---- 环形饼图：按事项聚合（合并同类项） ---- */
+/* 数据切换时清掉残留的悬浮提示，避免旧数值停留 */
+function clearTooltip(ch){
+  if(!ch)return;
+  try{ ch.tooltip&&ch.tooltip.setActiveElements([],{x:0,y:0}); ch.active=[]; }catch(e){}
+}
+function renderPie(){
+  const canvas=$("#pie-canvas"),empty=$("#pie-empty"),legend=$("#pie-legend");
+  const list=groupByTask(sessionsInRange(pieRange));
+  legend.innerHTML="";
+  if(!list.length){
+    empty.classList.remove("hidden");canvas.style.display="none";
+    if(pieChart){pieChart.destroy();pieChart=null}
+    return;
+  }
+  empty.classList.add("hidden");canvas.style.display="";
+  const top=list.slice(0,7),rest=list.slice(7);
+  const rows=rest.length?[...top,{name:"其他",ms:rest.reduce((a,x)=>a+x.ms,0),gray:true}]:top;
+  const total=rows.reduce((a,x)=>a+x.ms,0)||1;
+  const colors=rows.map(x=>x.gray?"#cdc6c5":colorFor(x.name));
+  const labels=rows.map(x=>x.name);
+  const data=rows.map(x=>Math.round(x.ms/1000));
+  if(!pieChart){
+    pieChart=new Chart(canvas,{
+      type:"doughnut",
+      data:{labels,datasets:[{data,backgroundColor:colors,borderWidth:2,borderColor:"#fffdfb",hoverOffset:5}]},
+      options:{
+        cutout:"62%",maintainAspectRatio:false,
+        plugins:{
+          legend:{display:false},
+          tooltip:{
+            callbacks:{label:c=>{
+              const ds=c.dataset.data,total2=ds.reduce((a,b)=>a+b,0)||1;
+              const ms=c.parsed*1000,pct=Math.round(ms/total2*100);
+              return " "+c.label+" · "+fmtDur(ms)+" · "+pct+"%";
+            }}
+          }
+        }
+      }
+    });
+  }else{
+    clearTooltip(pieChart);
+    pieChart.data.labels=labels;
+    const ds=pieChart.data.datasets[0];
+    ds.data=data;ds.backgroundColor=colors;
+    pieChart.update();
+  }
+  legend.innerHTML=rows.map(x=>{
+    const pct=Math.round(x.ms/total*100);
+    return '<li><span class="dot" style="background:'+(x.gray?"#cdc6c5":colorFor(x.name))+'"></span>'
+      +'<span class="nm">'+esc(x.name)+'</span><span class="dur">'+fmtDur(x.ms)+'</span><span class="pct">'+pct+"%</span></li>";
+  }).join("");
+}
+
+/* ---- 折线趋势图：按日/周/月，可按事项筛选 ---- */
+function trendBuckets(gran){
+  const now=new Date(),out=[];
+  if(gran==="day"){
+    for(let i=29;i>=0;i--){
+      const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()-i);
+      out.push({key:dateStr(d),label:(d.getMonth()+1)+"/"+d.getDate()});
+    }
+    return {buckets:out,keyOf:s=>s.date||""};
+  }
+  if(gran==="week"){
+    const m0=mondayOf(now);
+    for(let i=11;i>=0;i--){
+      const d=new Date(m0.getFullYear(),m0.getMonth(),m0.getDate()-7*i);
+      out.push({key:dateStr(d),label:(d.getMonth()+1)+"/"+d.getDate()});
+    }
+    return {buckets:out,keyOf:s=>s.date?dateStr(mondayOf(parseDate(s.date))):""};
+  }
+  for(let i=11;i>=0;i--){
+    const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+    out.push({key:monthStr(d),label:d.getFullYear()+"/"+(d.getMonth()+1)});
+  }
+  return {buckets:out,keyOf:s=>(s.date||"").slice(0,7)};
+}
+function renderTrendChips(){
+  const box=$("#trend-chips");box.innerHTML="";
+  const lastUse=new Map();
+  for(const s of sessions){const n=s.taskName||"专注";lastUse.set(n,Math.max(lastUse.get(n)||0,s.startTs))}
+  const names=[...lastUse.entries()].sort((a,b)=>b[1]-a[1]).slice(0,10).map(e=>e[0]);
+  if(trendTask&&!names.includes(trendTask))trendTask=null;
+  const mk=(label,val,on,color)=>{
+    const b=document.createElement("button");
+    b.className="chip"+(on?" on":"");b.type="button";
+    if(on)b.style.background=color||"var(--accent-deep)";
+    b.textContent=label;
+    b.onclick=()=>{trendTask=val;renderTrendChips();renderTrend()};
+    box.appendChild(b);
+  };
+  mk("全部",null,trendTask===null);
+  for(const n of names)mk(n,n,trendTask===n,colorFor(n));
+}
+function renderTrend(){
+  const {buckets,keyOf}=trendBuckets(trendGran);
+  const filtered=trendTask?sessions.filter(s=>(s.taskName||"专注")===trendTask):sessions;
+  const data=buckets.map(b=>Math.round(filtered.filter(s=>keyOf(s)===b.key).reduce((a,s)=>a+s.durationMs,0)/1000));
+  const color=trendTask?colorFor(trendTask):"#f5544d";
+  if(!lineChart){
+    lineChart=new Chart($("#line-canvas"),{
+      type:"line",
+      data:{labels:buckets.map(b=>b.label),datasets:[{
+        data,borderColor:color,backgroundColor:hexA(color,.13),fill:true,tension:.35,
+        borderWidth:2.5,pointRadius:2.5,pointHoverRadius:5,pointBackgroundColor:color,borderCapStyle:"round"
+      }]},
+      options:{
+        maintainAspectRatio:false,interaction:{mode:"index",intersect:false},
+        scales:{
+          x:{grid:{display:false},border:{display:false},ticks:{maxTicksLimit:6,maxRotation:0,autoSkip:true,color:"#a8a1a0",font:{size:11}}},
+          y:{beginAtZero:true,grid:{color:"rgba(0,0,0,.05)"},border:{display:false},
+             ticks:{maxTicksLimit:5,color:"#a8a1a0",font:{size:11},callback:v=>v===0?"0":((v%3600===0?v/3600:(v/3600).toFixed(1))+"h")}}
+        },
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fmtDur(c.parsed.y*1000)}}}
+      }
+    });
+  }else{
+    clearTooltip(lineChart);
+    const ds=lineChart.data.datasets[0];
+    lineChart.data.labels=buckets.map(b=>b.label);
+    ds.data=data;ds.borderColor=color;ds.pointBackgroundColor=color;ds.backgroundColor=hexA(color,.13);
+    lineChart.update();
+  }
+}
+
+/* ---- 记录管理 ---- */
+const TRASH_SVG='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>';
+const PENCIL_SVG='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5l4 4L8.5 19.5H4.5v-4L14.5 5.5zM12.5 7.5l4 4"/></svg>';
+let recLimit=30; // 列表每次显示条数，「加载更早」递增
+function renderRecords(){
+  const list=$("#rec-list"),empty=$("#rec-empty");
+  $("#rec-count").textContent="共 "+sessions.length+" 条";
+  if(!sessions.length){list.innerHTML="";empty.classList.remove("hidden");return}
+  empty.classList.add("hidden");
+  const sorted=[...sessions].sort((a,b)=>b.startTs-a.startTs);
+  const shown=sorted.slice(0,recLimit);
+  const now=new Date(),today=dateStr(now),yest=dateStr(new Date(now.getFullYear(),now.getMonth(),now.getDate()-1));
+  list.innerHTML=shown.map(s=>{
+    const d=new Date(s.startTs),e=new Date(s.endTs);
+    const ds=s.date===today?"今天":(s.date===yest?"昨天":(d.getFullYear()===now.getFullYear()?(d.getMonth()+1)+"月"+d.getDate()+"日":dateStr(d)));
+    const range=pad2(d.getHours())+":"+pad2(d.getMinutes())+" – "+pad2(e.getHours())+":"+pad2(e.getMinutes());
+    const name=s.taskName||"专注";
+    return '<li><span class="rec-dot" style="background:'+colorFor(name)+'"></span>'
+      +'<div class="rec-main"><div class="rec-name">'+esc(name)+'</div><div class="rec-sub">'+ds+" · "+range+'</div></div>'
+      +'<span class="rec-dur">'+fmtDur(s.durationMs)+'</span>'
+      +'<button class="rec-edit" data-id="'+esc(s.id)+'" aria-label="改名">'+PENCIL_SVG+"</button>"
+      +'<button class="rec-del" data-id="'+esc(s.id)+'" aria-label="删除">'+TRASH_SVG+"</button></li>";
+  }).join("")
+    +(sorted.length>shown.length
+      ?'<li><button id="btn-rec-more" class="mg-btn" style="margin:8px auto 0">加载更早的 '+Math.min(recLimit,sorted.length-shown.length)+" 条</button></li>"
+      :"");
+}
+$("#rec-list").addEventListener("click",e=>{
+  if(e.target.closest("#btn-rec-more")){recLimit+=30;renderRecords();return}
+  const edit=e.target.closest(".rec-edit");
+  if(edit){const s=sessions.find(x=>x.id===edit.dataset.id);if(s)openRename(s);return}
+  const btn=e.target.closest(".rec-del");if(!btn)return;
+  const s=sessions.find(x=>x.id===btn.dataset.id);if(!s)return;
+  delTargetId=s.id;
+  $("#del-text").textContent="「"+(s.taskName||"专注")+"」"+fmtDur(s.durationMs)+"，删除后不可恢复";
+  dlgDel.classList.add("open");
+});
+
+function renderStats(){
+  renderOverview();renderPie();renderTrendChips();renderTrend();renderRecords();
+}
+
+/* ============ 提示 / 震动 / 音效 ============ */
+function toast(msg){
+  const t=$("#toast");t.textContent=msg;t.classList.add("show");
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+}
+function vibrate(ms){try{navigator.vibrate&&navigator.vibrate(ms)}catch(e){}}
+let actx=null;
+function beep(kind){
+  try{
+    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state==="suspended")actx.resume();
+    const seq=kind==="start"?[[523,0],[784,.12]]:[[784,0],[659,.14],[523,.28]];
+    for(const [f,dt] of seq){
+      const o=actx.createOscillator(),g=actx.createGain(),t=actx.currentTime+dt;
+      o.type="sine";o.frequency.value=f;
+      g.gain.setValueAtTime(.0001,t);
+      g.gain.exponentialRampToValueAtTime(.18,t+.02);
+      g.gain.exponentialRampToValueAtTime(.0001,t+.22);
+      o.connect(g).connect(actx.destination);o.start(t);o.stop(t+.25);
+    }
+  }catch(e){}
+}
+
+/* ============ 事件绑定 ============ */
+$("#btn-start").onclick=openSheet;
+$("#btn-go").onclick=goStart;
+$("#btn-pause").onclick=togglePause;
+$("#btn-end").onclick=requestEnd;
+$("#btn-keep").onclick=()=>dlgEnd.classList.remove("open");
+$("#btn-finish").onclick=finishEnd;
+$("#btn-del-no").onclick=()=>dlgDel.classList.remove("open");
+$("#btn-del-yes").onclick=()=>{
+  sessions=sessions.filter(s=>s.id!==delTargetId);delTargetId=null;
+  saveSessions();dlgDel.classList.remove("open");renderStats();
+  toast("已删除");
+};
+
+/* ---- 记录改名：跨日拆分的同组记录一并修改 ---- */
+let renameTargetId=null;
+function renameTargets(s){return s.gid?sessions.filter(x=>x.gid===s.gid):[s]}
+function openRename(s){
+  renameTargetId=s.id;
+  $("#rename-input").value=s.taskName||"";
+  const n=renameTargets(s).length;
+  $("#rename-text").textContent="原名称「"+(s.taskName||"专注")+"」"+(n>1?("，跨日拆分的 "+n+" 条记录将一并修改"):"");
+  dlgRename.classList.add("open");
+  setTimeout(()=>{const inp=$("#rename-input");inp.focus();inp.select()},150);
+}
+function doRename(){
+  const s=sessions.find(x=>x.id===renameTargetId);
+  if(!s){dlgRename.classList.remove("open");return}
+  const name=$("#rename-input").value.trim();
+  if(!name){toast("名称不能为空");return}
+  if(name===s.taskName){dlgRename.classList.remove("open");return}
+  for(const x of renameTargets(s))x.taskName=name;
+  saveSessions();renderStats();
+  dlgRename.classList.remove("open");
+  toast("已改名");
+}
+$("#btn-rename-no").onclick=()=>dlgRename.classList.remove("open");
+$("#btn-rename-yes").onclick=doRename;
+$("#rename-input").addEventListener("keydown",e=>{if(e.key==="Enter")doRename()});
+
+/* ---- 管理快捷事项 ---- */
+function renderManageList(){
+  const ul=$("#manage-list");
+  if(!recentTasks.length){ul.innerHTML='<li class="mg-empty">暂无快捷事项</li>';return}
+  ul.innerHTML=recentTasks.map(n=>
+    '<li><span class="rec-dot" style="background:'+colorFor(n)+'"></span><span class="nm">'+esc(n)+'</span>'
+    +'<button class="rec-del" data-name="'+esc(n)+'" aria-label="删除">'+TRASH_SVG+"</button></li>"
+  ).join("");
+}
+let clearArm=null;
+function resetClearBtn(){
+  if(clearArm){clearTimeout(clearArm);clearArm=null}
+  const b=$("#btn-manage-clear");b.textContent="清空";b.style.color="";
+}
+$("#btn-manage").onclick=()=>{resetClearBtn();renderManageList();dlgManage.classList.add("open")};
+$("#manage-list").addEventListener("click",e=>{
+  const btn=e.target.closest(".rec-del");if(!btn)return;
+  recentTasks=recentTasks.filter(n=>n!==btn.dataset.name);
+  saveRecent();renderManageList();renderRecentChips();
+});
+$("#btn-manage-clear").onclick=()=>{
+  if(!recentTasks.length)return;
+  if(!clearArm){ // 两步确认：先变红提示，再点一次才真清空
+    const b=$("#btn-manage-clear");b.textContent="确认清空？";b.style.color="#e07070";
+    clearArm=setTimeout(resetClearBtn,2500);
+    return;
+  }
+  resetClearBtn();
+  recentTasks=[];saveRecent();renderManageList();renderRecentChips();
+};
+$("#btn-manage-ok").onclick=()=>{resetClearBtn();dlgManage.classList.remove("open")};
+taskInput.addEventListener("keydown",e=>{if(e.key==="Enter")goStart()});
+$("#tabbar").addEventListener("click",e=>{const b=e.target.closest("button");if(b)switchTab(b.dataset.tab)});
+document.querySelectorAll(".overlay").forEach(ov=>{
+  ov.addEventListener("click",e=>{if(e.target===ov)ov.classList.remove("open")});
+});
+function bindSeg(id,cb){
+  $(id).addEventListener("click",e=>{
+    const b=e.target.closest("button");
+    if(!b||b.classList.contains("on"))return;
+    $(id).querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));
+    cb(b.dataset.v);
+  });
+}
+bindSeg("#seg-pie",v=>{pieRange=v;renderPie()});
+bindSeg("#seg-trend",v=>{trendGran=v;renderTrend()});
+
+/* Chart.js 全局风格 */
+if(window.Chart){
+  Chart.defaults.font.family='-apple-system,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif';
+  Chart.defaults.color="#8d8685";
+  Chart.defaults.plugins.tooltip.backgroundColor="rgba(50,42,42,.92)";
+  Chart.defaults.plugins.tooltip.padding=10;
+  Chart.defaults.plugins.tooltip.cornerRadius=10;
+  Chart.defaults.animation.duration=350;
+}
+
+/* ============ 启动：恢复进行中的专注 ============ */
+/* 超过这个时长的"进行中"直接判为忘记结束：留着的话，几天后再点结束会按零点
+   一次性写出好几天的假记录（每段还都带满时长） */
+const STALE_MS=12*3600*1000;
+(function init(){
+  const msg=[];
+  if(ongoing&&ongoing.startTs&&Date.now()-ongoing.startTs>STALE_MS){
+    ongoing=null;saveOngoing();enterIdle();svcCall("stop");
+    msg.push("上次有一条超过 12 小时没结束的专注，已作废");
+  }else if(ongoing&&ongoing.startTs){enterRunning();svcSyncState()}
+  else{ongoing=null;enterIdle()}
+  if(!storageOK)msg.push("浏览器禁用了本地存储，本次专注不会被保存");
+  if(msg.length)toast(msg.join("；"));
+})();
+</script>
+</body>
+</html>

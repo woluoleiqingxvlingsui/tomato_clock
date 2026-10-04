@@ -1,0 +1,9 @@
+{
+  "appId": "app.tomato.clock",
+  "appName": "番茄钟",
+  "webDir": "../www",
+  "backgroundColor": "#fdf3f2",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "auto"
+  }
+}

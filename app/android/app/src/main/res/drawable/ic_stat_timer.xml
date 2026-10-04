@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：白色秒表（小图标必须纯白+透明） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 表体圆环（evenOdd 挖空） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,5 a7,7 0 1,0 0.001,0 Z M12,7 a5,5 0 1,1 -0.001,0 Z"/>
+    <!-- 顶部按钮 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9.5,2 L14.5,2 L14.5,4 L9.5,4 Z"/>
+    <!-- 左上斜柄 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.4,5.2 L6,6.8 L4.7,8.1 L3.1,6.5 Z"/>
+    <!-- 指针 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.3,7.6 L12.7,7.6 L12.7,12.4 L11.3,12.4 Z"/>
+</vector>

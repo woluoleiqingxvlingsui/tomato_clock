@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# ZCode 工作区产物（本地 AI 助手配置，与项目无关）
+.zcode/
+.zcodeignore
+
+# 签名密钥与口令（双保险：android/.gitignore 里同样有规则）
+*.keystore
+*.jks
+keystore.properties
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+
+# 打包产物输出目录（build-apk.ps1 / install-to-phone.ps1 生成的 APK 副本）
+_out/

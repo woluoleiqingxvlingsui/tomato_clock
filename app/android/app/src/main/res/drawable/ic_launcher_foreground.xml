@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 番茄图标（白番茄+茎叶，红底由 adaptive-icon background 提供） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 茎 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52.5,24.5 L55.5,24.5 L56.6,37.5 L51.4,37.5 Z"/>
+    <!-- 左叶 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M53.2,37.2 C49.5,31.6 42.4,30.3 38.6,32.6 C42.8,37.4 48.9,38.3 53.2,37.2 Z"/>
+    <!-- 右叶 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54.8,37.2 C58.5,31.6 65.6,30.3 69.4,32.6 C65.2,37.4 59.1,38.3 54.8,37.2 Z"/>
+    <!-- 果身 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,34 C42.6,34 33.5,43.7 33.5,56.3 C33.5,69.4 43.1,79.6 54,79.6 C64.9,79.6 74.5,69.4 74.5,56.3 C74.5,43.7 65.4,34 54,34 Z"/>
+</vector>

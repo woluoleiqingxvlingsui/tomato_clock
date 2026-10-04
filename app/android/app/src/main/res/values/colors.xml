@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 页面/窗口底色（暖白） -->
+    <color name="tomato_bg">#FDF3F2</color>
+    <!-- 主题红（图标底色） -->
+    <color name="tomato_red">#F5544D</color>
+</resources>
