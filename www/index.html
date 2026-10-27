@@ -423,11 +423,36 @@ const KEY={
   legacy:"tomato.records"       // 旧桌面版（倒计时）的数据
 };
 
-/* ============ 调色板：按事项名哈希固定取色，同一事项永远同色 ============ */
-const PALETTE=["#ff6b6b","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16","#a855f7","#64748b"];
+/* ============ 配色：按事项名哈希取色，同一事项永远同色 ============
+   早期版本是在 12 个固定颜色里取模（PALETTE[h%12]）。槽位有限，
+   必然会出现「两个不同事项撞到同一个颜色」—— 科研和改代码就都落在
+   那个灰色上，饼图上两瓣一模一样，列表里的圆点也分不出谁是谁。
+   12 槽位放 6 个名字，撞色概率约 74%，不是偶发。
+   现在改成在连续色相上取色，哈希再带出一点饱和度/亮度差异：
+   同一名字永远同一色，不同名字几乎不可能同色。 */
+function hashName(str){
+  let h=0x811c9dc5;                       // FNV-1a：各位都混得开，比 h*31 稳
+  for(let i=0;i<str.length;i++){
+    h^=str.charCodeAt(i);
+    h=Math.imul(h,0x01000193)>>>0;
+  }
+  return h>>>0;
+}
 function colorFor(name){
-  let h=0;for(const ch of String(name))h=(h*31+ch.codePointAt(0))>>>0;
-  return PALETTE[h%PALETTE.length];
+  const h=hashName(String(name));
+  const hue=h%360;                        // 色相 0-359，均匀铺开
+  const sat=60+((h>>>9)%4)*6;             // 饱和度 60 / 66 / 72 / 78
+  const lig=50+((h>>>15)%4)*4;            // 亮度 50 / 54 / 58 / 62
+  return hslToHex(hue,sat,lig);
+}
+/* HSL → #RRGGBB。必须返回 hex：趋势图的半透明填充走 hexA()，那函数只认 hex。 */
+function hslToHex(h,s,l){
+  s/=100;l/=100;
+  const k=n=>(n+h/30)%12;
+  const a=s*Math.min(l,1-l);
+  const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+  const t=v=>Math.round(255*v).toString(16).padStart(2,"0");
+  return "#"+t(f(0))+t(f(8))+t(f(4));
 }
 
 /* ============ 日期工具 ============ */

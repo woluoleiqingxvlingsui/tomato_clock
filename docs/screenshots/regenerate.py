@@ -44,7 +44,7 @@ SEED_JS = r"""
 <script>
 /* ===== 截图用示例数据（脚本生成，不是真实使用记录）===== */
 (function(){
-  var TASKS=["组会准备","科研","英语","写代码","读文献","写论文"];
+  var TASKS=["组会准备","科研","英语","改代码","读文献","写论文"];
   /* 这几天故意没有记录，让趋势图有缺口更像真实使用 */
   var SKIP={3:1,7:1,11:1,14:1,18:1,22:1,25:1,28:1,29:1};
   var seed=20261027;
@@ -84,7 +84,7 @@ SEED_JS = r"""
   }
   S.sort(function(a,b){return b.startTs-a.startTs});
   localStorage.setItem("tomato.sessions",JSON.stringify(S));
-  localStorage.setItem("tomato.recentTasks",JSON.stringify(["写论文","读文献","科研","写代码"]));
+  localStorage.setItem("tomato.recentTasks",JSON.stringify(["写论文","读文献","科研","改代码"]));
   localStorage.setItem("tomato.migratedV2","true");
   /* running 界面需要一条「进行中」的专注；其余界面不要 */
   var s=new URLSearchParams(location.search).get("s");
