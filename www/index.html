@@ -28,7 +28,7 @@ body{
   touch-action:manipulation;overscroll-behavior-y:none;
   -webkit-user-select:none;user-select:none;
 }
-input{-webkit-user-select:text;user-select:text}
+input,textarea{-webkit-user-select:text;user-select:text}
 button{font-family:inherit}
 
 .blob{position:fixed;border-radius:50%;filter:blur(70px);z-index:-1;opacity:.6;pointer-events:none}
@@ -209,14 +209,15 @@ button{font-family:inherit}
 <div class="blob blob-a"></div>
 <div class="blob blob-b"></div>
 
+<!-- 「忘了点结束」常驻提醒条：固定在屏幕顶部，切到统计页也可见 -->
+<div id="stale-banner" class="hidden">
+  <span class="b-ico">⚠</span>
+  <span class="b-txt" id="stale-txt"></span>
+  <button id="stale-x" class="b-x" type="button" aria-label="关闭提醒">×</button>
+</div>
+
 <!-- ================= 专注页 ================= -->
 <main id="page-focus" class="page active">
-  <!-- 「忘了点结束」常驻提醒条：默认隐藏，条件满足时由 JS 显示 -->
-  <div id="stale-banner" class="hidden">
-    <span class="b-ico">⚠</span>
-    <span class="b-txt" id="stale-txt"></span>
-    <button id="stale-x" class="b-x" type="button" aria-label="关闭提醒">×</button>
-  </div>
   <section id="focus-idle">
     <div class="hero-title">番茄钟</div>
     <p class="hero-sub">准备好就开始吧</p>
@@ -279,7 +280,8 @@ button{font-family:inherit}
       <span class="card-note">文件只由你自己保管</span>
     </div>
     <p class="card-note" style="margin-bottom:12px;line-height:1.6">
-      导出一份 JSON 存到手机或电脑。换机、重装、debug 换 release 之前先导一份，记录就不会丢。
+      导出一份 JSON 存到手机或电脑。换机、重装、debug 换 release 之前先导一份，能把已完成的记录带走。
+      备份里<b>只含已完成的记录和快捷事项，不含正在进行中的专注</b> —— 迁移或卸载前先把这次专注结束掉、确认提示「已记录专注」再导出。
     </p>
     <div class="backup-row">
       <button id="btn-export" class="btn btn-ghost">导出数据</button>
@@ -348,6 +350,7 @@ button{font-family:inherit}
     <div class="field-lab" style="margin-top:14px">专注时长</div>
     <input id="edit-dur-input" class="task-input" inputmode="numeric" placeholder="0:25:00">
     <div class="chips" id="edit-dur-chips"></div>
+    <p class="field-hint" id="edit-dur-exact" style="margin:8px 0 0"></p>
     <p class="field-hint">格式 时:分:秒，如 0:25:00。只写两段按「分:秒」算（1:30 就是 1 分 30 秒）；只写数字按分钟算。最长 24 小时。</p>
     <div class="dialog-actions" style="margin-top:16px">
       <button id="btn-edit-no" class="btn btn-ghost">取消</button>
@@ -374,6 +377,7 @@ button{font-family:inherit}
   <div class="dialog" style="width:min(92%,380px);text-align:left">
     <h3>导出数据</h3>
     <p id="export-info" style="margin-bottom:10px"></p>
+    <p class="field-hint" style="margin:0 0 10px">备份只包含<b>已完成的记录</b>和快捷事项，<b>不包含正在进行中的专注</b>。迁移、卸载或换包型之前，先把这次专注结束掉、确认提示「已记录专注」再导出。</p>
     <textarea id="export-text" class="json-area" readonly spellcheck="false"></textarea>
     <p class="field-hint">手机上点「保存到文件」会弹出系统文件选择器；也可以长按上面的文本全选复制。</p>
     <button id="btn-export-copy" class="mg-btn" type="button" style="margin:10px 2px 0 0">复制到剪贴板</button>
@@ -407,10 +411,10 @@ button{font-family:inherit}
 "use strict";
 /* ============ 存储 ============ */
 const store={
-  fail:false, // 最近一次写入失败过（无痕模式 / file:// 受限 / 配额满）：此后"已记录"都不可信
   get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},
-  set(k,v){try{localStorage.setItem(k,JSON.stringify(v));store.fail=false}catch(e){store.fail=true}},
-  del(k){try{localStorage.removeItem(k)}catch(e){}}
+  // 返回是否真的写进本机：无痕模式 / file:// 受限 / 配额满都会失败，调用处要据此提示
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}},
+  del(k){try{localStorage.removeItem(k);return true}catch(e){return false}}
 };
 /* localStorage 是不是真能用：无痕模式、某些浏览器的 file:// 下写入会静默失败，
    界面却一切正常，等于专注记录在无声蒸发。启动时先探一次，别等丢完才知道。 */
@@ -422,6 +426,164 @@ const KEY={
   migrated:"tomato.migratedV2",
   legacy:"tomato.records"       // 旧桌面版（倒计时）的数据
 };
+
+/* ============ 同源多页面的写入协调 ============
+   同一浏览器的多个标签页/窗口共享同一个 localStorage，但每个页面各有一份自己的内存快照。
+   以前每个页面都拿自己的快照整表写回，于是：
+     - 页面 A 刚写进去的记录，被还拿着旧快照的页面 B 整表覆盖掉（丢记录）
+     - 页面 B 删掉的记录，被页面 A 的旧快照"复活"
+   光加 storage 事件监听、或者写之前重读一次都不够：读-改-写之间仍然可能被别人插队。
+
+   两条路：
+   ① 有 Web Locks（navigator.locks）：把「读 → 合并 → 写回」整段放进跨页面互斥锁里。
+      同一来源的页面之间由浏览器保证互斥，标签页被关掉时锁自动释放，不会死锁。
+      这种环境下**多个页面可以正常同时使用**，功能不阉割。
+   ② 没有 Web Locks（老浏览器、file:// 直接双击打开）：localStorage 没有"比较并交换"，
+      做不出真正的互斥锁，但可以做**写权限唯一**的仲裁：
+      竞争的页面把申请写进同一份名单，名单按 (时间, id) 排序，最小的那个拿到写权限，
+      其它页面进入**只读**（所有写操作一律被挡下，并明确提示去哪个页面操作）。
+      拿到权限的页面每 1.5 秒续租一次；页面被关掉/崩溃后租约过期，其它页面重新竞选，
+      不会永久卡在只读。
+      这样"两个页面同时写"在退化环境下也不会发生。 */
+const LOCK_SESSIONS="tomato.lock.sessions";
+const LOCK_ONGOING="tomato.lock.ongoing";
+const LOCK_RECENT="tomato.lock.recent";
+const hasWebLocks=!!(navigator.locks&&navigator.locks.request);
+const WRITER_KEY="tomato.lock.writer";   // 退化方案用的写权限名单
+const WRITER_TTL=6000;                   // 租约有效期（毫秒）
+const WRITER_BEAT=1500;                  // 续租间隔
+const WRITER_SETTLE=280;                 // 竞选后的稳定等待（让所有申请都进名单）
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* ---- 写权限租约（只在没有 Web Locks 时启用） ---- */
+const myWriterId=uid();
+let writerRole=hasWebLocks?"shared":"pending";   // "owner" | "follower" | "shared" | "pending"
+let writerNote="";            // 给只读页面看的原因
+let lastReadOnlyToast=0;
+function readWriterRecord(){
+  const v=store.get(WRITER_KEY,null);
+  return (v&&typeof v==="object"&&Array.isArray(v.claims))?v:null;
+}
+function writeWriterRecord(rec){return store.set(WRITER_KEY,rec)}
+/* 名单里谁拿到写权限：
+   1) 在任的 owner 且租约没过期 -> 继续当 owner（续租语义）
+   2) 否则按 (申请时间, id) 最小者当选；太老的申请（页面早没了）直接作废 */
+function electOwner(rec){
+  const now=Date.now();
+  if(rec.owner&&rec.owner!==myWriterId&&rec.expires>now)return rec.owner;
+  // 记录里的 owner 还是自己（只是租约过期，比如页面被冻结过）：
+  // 续租语义 —— 优先保住原来的 owner，不让一次超时就把权限丢给别人。
+  // 别人接管时会把 owner 字段改掉，所以这条不会覆盖"新 owner"。
+  if(rec.owner===myWriterId)return myWriterId;
+  // 没有在任的 owner：按 (申请时间, id) 最小者当选。
+  // 申请超过一个租约周期没被刷新就作废（那个页面多半已经关了），
+  // 否则关掉的页面会一直"占着"选举资格，新的页面永远接不上手。
+  const alive=rec.claims.filter(c=>c.ts>now-WRITER_TTL);
+  if(!alive.length)return null;
+  alive.sort((a,b)=>(a.ts-b.ts)||(a.id<b.id?-1:(a.id>b.id?1:0)));
+  return alive[0].id;
+}
+/* 竞选：把自己的申请写进名单，等所有人写完，再按名单决定谁写。
+   申请被别人的写覆盖了就重来一轮（最多 6 轮）。 */
+async function claimWriterRole(){
+  const base=Date.now();
+  for(let attempt=0;attempt<6;attempt++){
+    // 已经有在任的写权限页面：直接让位，不要再去写名单（少写少打架，
+    // 也避免把对方心跳里的 expires 写旧了）
+    const live=readWriterRecord();
+    if(live&&live.owner&&live.owner!==myWriterId&&live.expires>Date.now()){
+      writerRole="follower";writerNote="另一个标签页正在使用本 App";return false;
+    }
+    const rec=live||{claims:[],owner:null,expires:0};
+    // 每次都把自己的申请刷新成当前时间：申请太旧就没资格了（页面可能已经关了）
+    const claims=rec.claims.filter(c=>c.id!==myWriterId).concat([{id:myWriterId,ts:base}]);
+    writeWriterRecord(Object.assign({},rec,{claims:claims.slice(-12)}));
+    await delay(WRITER_SETTLE+Math.floor(Math.random()*120));
+    const cur=readWriterRecord();
+    if(!cur||!cur.claims.some(c=>c.id===myWriterId))continue;   // 申请被覆盖 -> 重来
+    const winner=electOwner(cur);
+    if(winner!==myWriterId){writerRole="follower";writerNote="另一个标签页正在使用本 App";return false}
+    writeWriterRecord(Object.assign({},cur,{owner:myWriterId,expires:Date.now()+WRITER_TTL}));
+    await delay(120);
+    const conf=readWriterRecord();
+    if(conf&&conf.owner===myWriterId){writerRole="owner";writerNote="";return true}
+    // 有人同时抢到了 -> 下一轮按名单重选
+  }
+  writerRole="follower";writerNote="另一个标签页正在使用本 App";
+  return false;
+}
+/* 租约的【唯一真相】是盘上那份记录，内存里的 writerRole 只是给界面看的缓存。
+   页面被冻结 / 挂起再恢复时，内存里可能还留着 "owner"，
+   而盘上的权限早就过期、或已经被别的页面接管了 —— 所以任何写操作
+   都必须重新读盘核对，不能拿缓存身份直接写。 */
+function leaseValidNow(){
+  const rec=readWriterRecord();
+  const now=Date.now();
+  if(rec&&rec.owner===myWriterId&&rec.expires>now)return {ok:true,rec:rec};
+  if(rec&&rec.owner&&rec.owner!==myWriterId&&rec.expires>now)return {ok:false,reason:"taken-over",rec:rec};
+  return {ok:false,reason:"expired",rec:rec};
+}
+/* owner 续租；owner 变成别人就退位成只读。
+   续租只认盘上的记录：自己的租约过期了就去重新竞选（不靠缓存身份续命），
+   别人在任且租约有效就老老实实让位。 */
+async function beatWriterLease(){
+  if(hasWebLocks)return;
+  const rec=readWriterRecord();
+  const now=Date.now();
+  if(!rec){writerRole="pending";return}
+  if(rec.owner===myWriterId&&rec.expires>now){
+    // 盘上确认还是我、且租约没过期 -> 续租
+    writeWriterRecord(Object.assign({},rec,{owner:myWriterId,expires:now+WRITER_TTL}));
+    writerRole="owner";writerNote="";
+    return;
+  }
+  if(rec.owner&&rec.owner!==myWriterId&&rec.expires>now){
+    writerRole="follower";writerNote="另一个标签页正在使用本 App";return;
+  }
+  // 租约过期（多半是页面被冻结过）或记录里没有有效 owner：重新竞选。
+  // 竞选是真实选举 —— 有别人在任且租约有效的话，这里抢不走。
+  writerRole="pending";
+  const got=await claimWriterRole();
+  if(got){try{await migrate()}catch(e){}}
+}
+/* 注意：这里刻意没有 canWrite() 这种"只看内存角色"的判断函数。
+   页面被冻结/挂起再恢复时，内存里的角色会过期；权限一律以盘上的租约为准，
+   判定统一走 leaseValidNow() / ensureWritable()。 */
+function notifyReadOnly(){
+  const now=Date.now();
+  if(now-lastReadOnlyToast>3000){
+    lastReadOnlyToast=now;
+    toast("当前页面是只读的："+(writerNote||"写权限已失效")+"。请到那个标签页操作，或关掉它后刷新本页。");
+  }
+}
+/* 写之前的最后一道关卡。
+   - 权限仍然有效（盘上确认）-> 放行
+   - 已被别的页面接管 -> 拒绝
+   - 租约过期、也没人接管 -> 重新竞选一次（真实选举，不是拿缓存身份续命）；
+     选上了就放行，选不上就拒绝
+   冻结前排队、恢复后才真正执行的写操作，也会走到这里重新核对，
+   所以旧 owner 不会凭缓存身份把新 owner 的数据覆盖掉。 */
+async function ensureWritable(){
+  if(hasWebLocks)return true;
+  const st=leaseValidNow();
+  if(st.ok){writerRole="owner";writerNote="";return true}
+  if(st.reason==="taken-over"){
+    writerRole="follower";writerNote="另一个标签页正在使用本 App";
+    notifyReadOnly();return false;
+  }
+  writerRole="pending";
+  const got=await claimWriterRole();
+  if(got)return true;
+  notifyReadOnly();return false;
+}
+/* 页面内串行化：退化路径下同一页面也不该有两个写操作交叉 */
+let localQueue=Promise.resolve();
+function withLock(name,fn){
+  if(hasWebLocks)return navigator.locks.request(name,fn);
+  const run=localQueue.then(()=>fn());
+  localQueue=run.then(()=>{},()=>{});
+  return run;
+}
 
 /* ============ 配色：按事项名哈希取色，同一事项永远同色 ============
    早期版本是在 12 个固定颜色里取模（PALETTE[h%12]）。槽位有限，
@@ -461,17 +623,76 @@ function dateStr(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.g
 function parseDate(str){const p=String(str||"").split("-").map(Number);return new Date(p[0]||1970,(p[1]||1)-1,p[2]||1)}
 function mondayOf(d){const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-((x.getDay()+6)%7));return x}
 function monthStr(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)}
+/* 日历日期是否真实存在：2026-02-30 这种"看着像日期"的字符串要判成无效，
+   否则统计里会出现一条根本没有的那一天。 */
+const DATE_RE=/^\d{4}-\d{2}-\d{2}$/;
+function isRealDateStr(s){
+  if(typeof s!=="string"||!DATE_RE.test(s))return false;
+  const p=s.split("-").map(Number);
+  if(p[1]<1||p[1]>12||p[2]<1||p[2]>31)return false;
+  const d=new Date(p[0],p[1]-1,p[2]);
+  return d.getFullYear()===p[0]&&d.getMonth()===p[1]-1&&d.getDate()===p[2];
+}
 
 /* ============ 数据 ============ */
-let sessions=store.get(KEY.sessions,[]);
+/* 盘上的结构可能被手改 / 旧版本写坏：形状不对就退回空值，别让整个脚本在 .filter/.map 上崩掉 */
+const loadArray=k=>{const v=store.get(k,[]);return Array.isArray(v)?v:[]};
+const isSessionObj=s=>s&&typeof s==="object"&&typeof s.id==="string"&&s.id;
+let sessions=loadArray(KEY.sessions).filter(isSessionObj);
 let ongoing=store.get(KEY.ongoing,null);
-let recentTasks=store.get(KEY.recent,[]);
+if(!ongoing||typeof ongoing!=="object")ongoing=null;
+let recentTasks=loadArray(KEY.recent).filter(n=>typeof n==="string"&&n.trim());
 let pieRange="day",trendGran="day",trendTask=null;
 let pieChart=null,lineChart=null,delTargetId=null,toastTimer=null;
 
-const saveSessions=()=>store.set(KEY.sessions,sessions);
-const saveOngoing=()=>ongoing?store.set(KEY.ongoing,ongoing):store.del(KEY.ongoing);
-const saveRecent=()=>store.set(KEY.recent,recentTasks);
+/* ---- 读盘上的最新值：永远不信内存快照 ---- */
+function readSessions(){return loadArray(KEY.sessions).filter(isSessionObj)}
+function readOngoing(){const v=store.get(KEY.ongoing,null);return (v&&typeof v==="object")?v:null}
+function readRecent(){return loadArray(KEY.recent).filter(n=>typeof n==="string"&&n.trim())}
+
+/* ---- 所有「读-改-写」都走这三个入口：拿锁 → 重读 → 合并 → 写回 → 同步内存 ----
+   fn(cur) 直接改 cur；返回 {abort:true,reason} 表示放弃这次修改（不写盘）。
+   写盘失败时返回 {ok:false,reason:"save-failed"}，内存快照保持原样，
+   界面不会假装成功，调用方据此提示用户。 */
+function mutateSessions(fn){
+  return withLock(LOCK_SESSIONS,async()=>{
+    if(!(await ensureWritable()))return {ok:false,reason:"read-only"};
+    const cur=readSessions();
+    let out;
+    try{out=fn(cur)||{}}catch(e){return {ok:false,reason:"error",error:e}}
+    if(out.abort)return {ok:true,aborted:true,reason:out.reason};
+    if(!store.set(KEY.sessions,cur))return {ok:false,reason:"save-failed"};
+    sessions=cur;
+    return {ok:true,aborted:false};
+  });
+}
+/* 进行中的会话同理：锁内重读盘上的值，避免第二个页面把第一个页面的会话覆盖掉。
+   fn(cur) 返回 {value:<对象|null>} 表示落盘，或 {abort:true,reason} 表示放弃。 */
+function mutateOngoing(fn){
+  return withLock(LOCK_ONGOING,async()=>{
+    if(!(await ensureWritable()))return {ok:false,reason:"read-only"};
+    const cur=readOngoing();
+    let out;
+    try{out=fn(cur)||{}}catch(e){return {ok:false,reason:"error",error:e}}
+    if(out.abort)return {ok:true,aborted:true,reason:out.reason};
+    const saved=(out.value===null)?store.del(KEY.ongoing):store.set(KEY.ongoing,out.value);
+    if(!saved)return {ok:false,reason:"save-failed"};
+    ongoing=(out.value===null)?null:out.value;
+    return {ok:true,aborted:false};
+  });
+}
+function mutateRecent(fn){
+  return withLock(LOCK_RECENT,async()=>{
+    if(!(await ensureWritable()))return {ok:false,reason:"read-only"};
+    const cur=readRecent();
+    let out;
+    try{out=fn(cur)||{}}catch(e){return {ok:false,reason:"error",error:e}}
+    if(out.abort)return {ok:true,aborted:true,reason:out.reason};
+    if(!store.set(KEY.recent,cur))return {ok:false,reason:"save-failed"};
+    recentTasks=cur;
+    return {ok:true,aborted:false};
+  });
+}
 
 /* ============ 锁屏/通知栏计时卡（原生前台服务；电脑浏览器里为空操作） ============ */
 const TimerSvc=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())?window.Capacitor.Plugins.TimerService:null;
@@ -493,21 +714,39 @@ function svcSyncState(){
   });
 }
 
-/* 旧桌面版（倒计时）记录一次性迁移为新格式 */
-(function migrate(){
-  if(store.get(KEY.migrated,false))return;
-  const old=store.get(KEY.legacy,null);
-  if(Array.isArray(old)&&old.length){
+/* 旧桌面版（倒计时）记录一次性迁移为新格式。
+   整段都在 sessions 锁里做，而且：
+     - 迁移标记在【锁内】检查 —— 否则两个页面会各迁一遍，同一条旧记录出现两条同 id 的记录
+     - 按 id 去重 —— 已经迁过的、或同 id 的现有新记录都不覆盖
+     - 历史写盘失败时【不】写迁移标记，下次启动还能重试
+     - 原始旧数据（tomato.records）不删不改 */
+async function migrate(){
+  return withLock(LOCK_SESSIONS,async()=>{
+    if(!(await ensureWritable()))return {ok:false,reason:"read-only"};
+    if(store.get(KEY.migrated,false))return {ok:true,skipped:true};
+    const old=store.get(KEY.legacy,null);
     const add=[];
-    for(const r of old){
-      if(!r||r.type!=="work")continue;
-      const dur=Math.max(0,(r.minutes||0)*60000),ts=r.ts||Date.now();
-      add.push({id:"mig-"+(r.id||ts),taskName:r.taskName||"专注",startTs:ts,endTs:ts+dur,durationMs:dur,date:r.date||dateStr(new Date(ts))});
+    if(Array.isArray(old)){
+      for(const r of old){
+        if(!r||r.type!=="work")continue;
+        const dur=Math.max(0,(r.minutes||0)*60000),ts=r.ts||Date.now();
+        const d=(typeof r.date==="string"&&isRealDateStr(r.date))?r.date:dateStr(new Date(ts));
+        add.push({id:"mig-"+(r.id||ts),taskName:r.taskName||"专注",startTs:ts,endTs:ts+dur,durationMs:dur,date:d});
+      }
     }
-    if(add.length){sessions=sessions.concat(add);saveSessions();}
-  }
-  store.set(KEY.migrated,true);
-})();
+    if(add.length){
+      const cur=readSessions();
+      for(const s of add){
+        if(cur.some(x=>x.id===s.id))continue;   // 已经迁过 / 同 id 的新记录：不覆盖
+        cur.push(s);
+      }
+      if(!store.set(KEY.sessions,cur))return {ok:false,reason:"save-failed"};   // 写失败：不写完成标记，可重试
+      sessions=cur;
+    }
+    store.set(KEY.migrated,true);   // 数据落盘之后才标"迁移完成"
+    return {ok:true,added:add.length};
+  });
+}
 
 /* ============ 格式化 ============ */
 function fmtClock(ms){
@@ -515,14 +754,17 @@ function fmtClock(ms){
   return pad2(Math.floor(s/3600))+":"+pad2(Math.floor(s/60)%60)+":"+pad2(s%60);
 }
 function fmtDur(ms){
-  ms=Math.max(0,ms);const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),ss=s%60;
+  ms=Math.max(0,ms);
+  // 不足 1 秒的分段也要看得见：显示成 "0秒" 会让人以为这条记录丢了
+  if(ms>0&&ms<1000)return (ms/1000).toFixed(1)+"秒";
+  const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),ss=s%60;
   if(h>0)return h+"小时"+(m%60?m%60+"分":"")+(ss?ss+"秒":"");
   if(m>0)return ss>0?m+"分"+ss+"秒":m+"分钟";
   return ss+"秒";
 }
 function fmtCard(ms){
   if(ms<=0)return"0:00";
-  const s=Math.round(ms/1000),h=Math.floor(s/3600),m=Math.floor(s/60)%60,sec=s%60;
+  const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s/60)%60,sec=s%60;
   if(h>0)return h+":"+pad2(m)+":"+pad2(sec);
   return Math.floor(s/60)+":"+pad2(sec);
 }
@@ -570,6 +812,10 @@ const sheet=$("#sheet"),dlgEnd=$("#dlg-end"),dlgDel=$("#dlg-del"),dlgEdit=$("#dl
 const STALE_MS=12*3600*1000;
 /* 手动改时长时的上限：一天。再长就明显是手滑/误输入，不该进统计。 */
 const MAX_EDIT_MS=24*3600*1000;
+/* 一次专注净时长不足 1 秒就不生成记录（整次的口径）。
+   注意：只有「整次」不足 1 秒才整次不记；整次够了的情况下，
+   跨零点切出来的每一段只要有正时长就都要留下，不能因为这一段不足 1 秒就丢掉。 */
+const MIN_RECORD_MS=1000;
 
 /* 「忘了点结束」只有一个判定口径：净专注时长（elapsedMs）。
    它就是最终会被记录下来的那个数，和结束弹层里显示的时长是同一个值，
@@ -621,7 +867,9 @@ function updateStaleBanner(){
 }
 $("#stale-x").onclick=()=>{staleDismissed=true;updateStaleBanner()};
 setInterval(()=>{renderRunTime();updateStaleBanner()},250);
-document.addEventListener("visibilitychange",()=>{if(!document.hidden){renderRunTime();updateStaleBanner()}});
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden){renderRunTime();updateStaleBanner();svcSyncState()}
+});
 
 /* ---- 开始弹层 ---- */
 function openSheet(){
@@ -645,29 +893,75 @@ function renderRecentChips(){
     box.appendChild(b);
   }
 }
-function goStart(){
+/* 两次读到的"进行中"会话是不是同一次专注。
+   新版会话都有 sessionId；老版本存下来的没有，就退回比对开始时间。 */
+function sameSession(a,b){
+  if(!a||!b)return false;
+  if(a.sessionId&&b.sessionId)return a.sessionId===b.sessionId;
+  return a.startTs===b.startTs;
+}
+
+/* 这次专注是不是已经记过账了？
+   出现场景：历史保存成功、但"进行中"的状态没清掉（写盘失败 / 进程被杀）。
+   认出它就能保证：重开 App 再点一次结束、或者重复点结束，都不会重复记账。 */
+function isCommittedFocus(sess){
+  if(!sess)return false;
+  const list=readSessions();
+  if(sess.sessionId&&list.some(s=>s.gid===sess.sessionId))return true;
+  // 老版本存下来的会话没有 sessionId：退回到"开始时间 + 事项名"比对
+  return list.some(s=>s.startTs===sess.startTs&&(s.taskName||"专注")===(sess.taskName||"专注"));
+}
+
+async function goStart(){
   if(ongoing){closeSheet();enterRunning();return}
   const name=taskInput.value.trim()||"专注";
-  ongoing={taskName:name,startTs:Date.now(),pausedAccumMs:0,pausedAt:null,pauseLog:[]};
-  staleDismissed=false;saveOngoing();
-  recentTasks=[name,...recentTasks.filter(n=>n!==name)].slice(0,8);
-  saveRecent();
+  // 锁内重读盘上的会话：别的标签页可能已经在专注了，不能被静默覆盖
+  const res=await mutateOngoing(cur=>{
+    if(cur&&!isCommittedFocus(cur))return {abort:true,reason:"other-page"};
+    return {value:{taskName:name,startTs:Date.now(),pausedAccumMs:0,pausedAt:null,pauseLog:[],sessionId:uid()}};
+  });
+  if(res.aborted){
+    toast("另一个标签页/窗口已经在专注了，不能覆盖。请先在那边结束，或关掉那个标签页。");
+    return;
+  }
+  if(!res.ok){if(res.reason!=="read-only")toast("⚠ 开始失败：没能写进本机存储，这次专注不会被保存");return}
+  staleDismissed=false;
+  mutateRecent(cur=>{
+    const i=cur.indexOf(name);if(i>=0)cur.splice(i,1);
+    cur.unshift(name);if(cur.length>8)cur.length=8;
+  });
   svcCall("start",{taskName:name,startTs:String(ongoing.startTs),pausedAccumMs:"0",pausedAt:"-1"});
   closeSheet();enterRunning();updateStaleBanner();vibrate(20);beep("start");
 }
 
 /* ---- 暂停 / 结束 ---- */
-function togglePause(){
+async function togglePause(){
   if(!ongoing)return;
-  if(ongoing.pausedAt){
+  const mine=ongoing;
+  // 锁内重读盘上的会话再改：两个页面同时点暂停/继续时不会互相踩
+  const res=await mutateOngoing(cur=>{
+    if(!cur)return {abort:true,reason:"none"};
+    if(!sameSession(cur,mine))return {abort:true,reason:"other-page"};
     const now=Date.now();
-    (ongoing.pauseLog=ongoing.pauseLog||[]).push({from:ongoing.pausedAt,to:now});
-    ongoing.pausedAccumMs+=now-ongoing.pausedAt;
-    ongoing.pausedAt=null;
-  }else{
-    ongoing.pausedAt=Date.now();
+    if(cur.pausedAt){
+      (cur.pauseLog=cur.pauseLog||[]).push({from:cur.pausedAt,to:now});
+      cur.pausedAccumMs+=now-cur.pausedAt;
+      cur.pausedAt=null;
+    }else{
+      cur.pausedAt=now;
+    }
+    return {value:cur};
+  });
+  if(res.aborted&&res.reason==="other-page"){
+    // 盘上已经是另一个页面的会话了：本页认它，不两个页面各记各的
+    ongoing=readOngoing();
+    enterRunning();updateRunUI();updateStaleBanner();
+    toast("已切换到另一个标签页的专注状态");
+    return;
   }
-  saveOngoing();svcSyncState();updateRunUI();vibrate(15);
+  if(res.aborted)return;
+  if(!res.ok){if(res.reason!=="read-only")toast("⚠ 没能保存暂停状态");return}
+  svcSyncState();updateRunUI();vibrate(15);
 }
 function requestEnd(){
   if(!ongoing)return;
@@ -688,39 +982,86 @@ function requestEnd(){
 }
 
 /* 结束时按本地零点把跨日专注拆成多条记录（每天一笔账）：
-   每段扣除落在该段内的暂停时间，各段之和=本次总专注时长，秒级无损 */
-function finishEnd(){
-  if(!ongoing)return;
-  const dur=elapsedMs();
-  const endTs=ongoing.pausedAt||Date.now();
-  const taskName=ongoing.taskName,startTs=ongoing.startTs;
-  const pauses=ongoing.pauseLog;
-  const pauseIn=(a,b)=>{let t=0;for(const p of pauses){const s=Math.max(p.from,a),e=Math.min(p.to,b);if(e>s)t+=e-s}return t};
-  const gid=uid(); // 同一次专注各拆分段共用的组号，改名时一并更新
-  const before=sessions.length;
-  dlgEnd.classList.remove("open");
-  if(pauses){ // 新版会话带暂停明细，按零点精确拆分
-    let cur=startTs;
-    while(cur<endTs){
-      const d=new Date(cur);
-      const midnight=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime();
-      const segEnd=Math.min(endTs,midnight);
-      const f=segEnd-cur-pauseIn(cur,segEnd);
-      if(f>0)sessions.push({id:uid(),gid,taskName,startTs:cur,endTs:segEnd,durationMs:f,date:dateStr(new Date(cur))});
-      cur=segEnd;
-    }
-  }else if(dur>0){ // 升级前开始的旧会话没有暂停明细，退回单条记录，保证时长准确
-    sessions.push({id:uid(),gid,taskName,startTs,endTs,durationMs:dur,date:dateStr(new Date(startTs))});
+   每段扣除落在该段内的暂停时间，各段之和 = 本次总专注时长（毫秒级守恒）。
+   纯函数：不碰存储，回归脚本可以直接验。 */
+function buildSegments(sess){
+  const startTs=sess.startTs;
+  const endTs=sess.pausedAt||Date.now();
+  const pauses=sess.pauseLog;
+  if(!pauses){ // 升级前开始的旧会话没有暂停明细，退回单条记录，保证时长准确
+    const dur=Math.max(0,endTs-startTs-(sess.pausedAccumMs||0));
+    if(dur<MIN_RECORD_MS)return {dur,segments:[]};
+    return {dur,segments:[{startTs,endTs,durationMs:dur,date:dateStr(new Date(startTs))}]};
   }
-  saveSessions();
-  ongoing=null;saveOngoing();enterIdle();
-  svcCall("stop");
-  updateStaleBanner();
-  vibrate(30);beep("end");
-  // 三种结局只提示一次，避免连续 toast 互相顶掉：
-  // 写盘失败 > 一条没拆出来（全程暂停） > 正常记录成功
-  toast(store.fail?"⚠ 没能保存到本机（浏览器禁用了本地存储），本次专注未记录"
-    :(sessions.length>before?("已记录专注 "+fmtDur(dur)):"本次没有产生记录（全程处于暂停）"));
+  const pauseIn=(a,b)=>{let t=0;for(const p of pauses){const s=Math.max(p.from,a),e=Math.min(p.to,b);if(e>s)t+=e-s}return t};
+  // 净时长按【暂停明细】算，和分段扣减用的是同一份数据：
+  // 这样"各段之和 = 净专注时长"永远成立，
+  // 不会因为 pausedAccumMs 和明细对不上（老数据 / 手改的盘）而歪掉。
+  const totalPause=pauseIn(startTs,endTs);
+  const dur=Math.max(0,endTs-startTs-totalPause);
+  // 只有"整次"不足 1 秒才整次不生成记录
+  if(dur<MIN_RECORD_MS)return {dur,segments:[]};
+  const segments=[];
+  let cur=startTs;
+  while(cur<endTs){
+    const d=new Date(cur);
+    const midnight=new Date(d.getFullYear(),d.getMonth(),d.getDate()+1).getTime();
+    const segEnd=Math.min(endTs,midnight);
+    const f=segEnd-cur-pauseIn(cur,segEnd);
+    // 这一段只要有正时长就留下。整次够了的时候，不允许因为某段不足 1 秒就把它丢掉：
+    // 23:59:59.400 → 次日 00:00:00.600 这种 1200 毫秒的跨零点专注，两段都得在。
+    if(f>0)segments.push({startTs:cur,endTs:segEnd,durationMs:f,date:dateStr(new Date(cur))});
+    cur=segEnd;
+  }
+  return {dur,segments};
+}
+
+async function finishEnd(){
+  if(!ongoing)return;
+  const sess=ongoing;
+  const gid=sess.sessionId||(sess.sessionId=uid());
+  const built=buildSegments(sess);
+  dlgEnd.classList.remove("open");
+  // 落盘走带锁的写入口：读-合并-写在同一把锁里，别的页面插不进来
+  const res=await mutateSessions(cur=>{
+    // 幂等：同一次专注已经记过账就不再记第二遍
+    //（重复点结束、重开后重试、ongoing 没清掉又点一次，都走这里）
+    if(cur.some(s=>s.gid===gid))return {abort:true,reason:"already"};
+    if(cur.some(s=>s.startTs===sess.startTs&&(s.taskName||"专注")===(sess.taskName||"专注")))return {abort:true,reason:"already"};
+    if(!built.segments.length)return {abort:true,reason:"empty"};
+    for(const seg of built.segments){
+      cur.push({id:uid(),gid,taskName:sess.taskName,startTs:seg.startTs,endTs:seg.endTs,durationMs:seg.durationMs,date:seg.date});
+    }
+    return {added:built.segments.length};
+  });
+  if(!res.ok){
+    // 写盘失败：不删进行中的会话，本机状态还留着（重开还能恢复），
+    // 界面也停在"进行中"，用户可以直接再点一次结束重试。
+    // 注意：不能建议"先导出数据备份" —— 备份明确不含进行中的专注，导了也带不走这次专注。
+    if(res.reason!=="read-only"){
+      toast("⚠ 保存失败，这次专注没有记上账。进行中的状态还留着，可以再点一次「结束」重试。");
+    }
+    return;
+  }
+  let msg;
+  if(res.aborted&&res.reason==="already")msg="这次专注之前已经记过账了，没有重复记录";
+  else if(res.aborted&&res.reason==="empty")msg="本次没有产生记录（时长不足 1 秒或全程处于暂停）";
+  else msg="已记录专注 "+fmtDur(built.dur);
+  // 记账成功之后才清"进行中"状态；清不掉也没关系：重开时会认出它已经记过账，不会重复记
+  const cleared=await mutateOngoing(cur=>{
+    if(cur&&!sameSession(cur,sess))return {abort:true,reason:"other-page"};
+    return {value:null};
+  });
+  if(cleared.aborted){
+    // 期间另一个页面开始了新的专注：认它，别把人家的会话删掉
+    ongoing=readOngoing();
+    enterRunning();updateRunUI();updateStaleBanner();
+    toast(msg+"；另一个标签页开始了新的专注，本页已同步");
+    return;
+  }
+  enterIdle();svcCall("stop");updateStaleBanner();vibrate(30);beep("end");
+  if(!cleared.ok)msg+="（但没能清掉本机的「进行中」状态；重开 App 会自动认出它已记账，不会重复记）";
+  toast(msg);
 }
 
 /* ============ Tab 切换 ============ */
@@ -924,6 +1265,8 @@ $("#rec-list").addEventListener("click",e=>{
   const btn=e.target.closest(".rec-del");if(!btn)return;
   const s=sessions.find(x=>x.id===btn.dataset.id);if(!s)return;
   delTargetId=s.id;
+  // 记下弹窗打开时的样子：删除前拿它和盘上的最新内容比对，别的页面改过就提示冲突
+  delSnapshot={id:s.id,taskName:s.taskName,durationMs:s.durationMs,startTs:s.startTs};
   $("#del-text").textContent="「"+(s.taskName||"专注")+"」"+fmtDur(s.durationMs)+"，删除后不可恢复";
   dlgDel.classList.add("open");
 });
@@ -973,7 +1316,11 @@ async function saveExportFile(){
       dlgExport.classList.remove("open");
       toast("已保存 "+name);
       return;
-    }catch(e){/* 真出错才落到浏览器方案 */}
+    }catch(e){
+      // 原生平台没有可靠的下载兜底：报错就报错，别假装已导出
+      toast("保存失败，试试「复制到剪贴板」");
+      return;
+    }
   }
   try{
     const blob=new Blob([text],{type:"application/json"});
@@ -996,17 +1343,35 @@ async function copyExport(){
     toast("已复制到剪贴板");
   }catch(e){toast("复制失败，请长按文本手动复制")}
 }
-/* 导入进来的记录逐条体检：缺字段能补的补，补不了的整条丢掉，不让脏数据进统计 */
+/* 导入进来的记录逐条体检：不合法的整条丢掉，绝不让脏数据进统计。
+   判定标准（宁可少收也不能收错）：
+     - 时间戳必须是有限数，且在 JavaScript Date 的范围里（±8.64e15 ms）
+     - 起止时间必须构成合法区间：endTs >= startTs
+     - 专注时长不能为负，也不能超过它所在的时间区间
+     - date 要么缺省（从合法的 startTs 补齐），要么是一个真实存在的日历日期
+   已有合法 date 的记录不会被改写：换台电脑、时区变了也不动它。 */
+const MAX_TS=8.64e15;          // JS Date 能表示的最大毫秒数
+const MAX_SESSION_MS=365*24*3600*1000;
 function normalizeSession(r){
   if(!r||typeof r!=="object")return null;
   const taskName=typeof r.taskName==="string"&&r.taskName.trim()?r.taskName.trim():"专注";
-  let startTs=Number(r.startTs),endTs=Number(r.endTs),durationMs=Number(r.durationMs);
-  if(!isFinite(startTs)||startTs<=0)return null;
-  if(!isFinite(endTs)||endTs<startTs)endTs=startTs;
-  if(!isFinite(durationMs)||durationMs<0)durationMs=Math.max(0,endTs-startTs);
-  durationMs=Math.min(durationMs,365*24*3600*1000); // 离谱的值夹住，别把图表撑坏
+  const startTs=Number(r.startTs),endTs=Number(r.endTs),durationMs=Number(r.durationMs);
+  if(!Number.isFinite(startTs)||!Number.isFinite(endTs)||!Number.isFinite(durationMs))return null;
+  if(Math.abs(startTs)>MAX_TS||Math.abs(endTs)>MAX_TS)return null;   // 超出 Date 范围
+  if(startTs<=0)return null;
+  if(endTs<startTs)return null;                                     // 非法时间区间
+  if(durationMs<0)return null;
+  if(durationMs>MAX_SESSION_MS)return null;                         // 离谱的值直接不要
+  if(durationMs>endTs-startTs)return null;                          // 时长超出区间：非法
+  let date;
+  if(typeof r.date==="string"&&r.date.trim()){
+    const d=r.date.trim();
+    if(!isRealDateStr(d))return null;                               // 2026-02-30 这种日期不存在
+    date=d;                                                          // 合法 date 原样保留，不按当前时区改写
+  }else{
+    date=dateStr(new Date(startTs));                                // 缺日期：从合法 startTs 补齐
+  }
   const id=typeof r.id==="string"&&r.id?r.id:uid();
-  const date=typeof r.date==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(r.date)?r.date:dateStr(new Date(startTs));
   const o={id,taskName,startTs,endTs,durationMs,date};
   if(typeof r.gid==="string"&&r.gid)o.gid=r.gid;
   return o;
@@ -1040,26 +1405,39 @@ async function pickImportFile(){
   }
   $("#file-import").click();
 }
-function doImport(){
+async function doImport(){
   const text=$("#import-text").value.trim();
   if(!text){toast("先选个文件，或把 JSON 粘进来");return}
   const res=parseImport(text);
   if(res.error){toast(res.error);return}
-  const byId=new Map();
-  for(const s of sessions)byId.set(s.id,s);
+  // 合并走带锁的写入口：以盘上的最新记录为底，本机独有的记录保留
   let added=0,updated=0;
-  for(const s of res.clean){
-    if(byId.has(s.id)){updated++;Object.assign(byId.get(s.id),s)}
-    else{added++;byId.set(s.id,s)}
-  }
-  sessions=[...byId.values()];
+  const merged=await mutateSessions(cur=>{
+    const byId=new Map();
+    for(const s of cur)byId.set(s.id,s);
+    for(const s of res.clean){
+      if(byId.has(s.id)){updated++;Object.assign(byId.get(s.id),s)}
+      else{added++;byId.set(s.id,s)}
+    }
+    cur.length=0;
+    for(const s of byId.values())cur.push(s);
+  });
+  let savedRecent=true;
   if(res.recent.length){
-    const names=res.recent.concat(recentTasks.filter(n=>!res.recent.includes(n)));
-    recentTasks=names.slice(0,8);
+    const r=await mutateRecent(cur=>{
+      const names=res.recent.concat(cur.filter(n=>res.recent.indexOf(n)<0));
+      cur.length=0;
+      for(const n of names.slice(0,8))cur.push(n);
+    });
+    savedRecent=r.ok;
   }
-  saveSessions();saveRecent();renderStats();
+  renderStats();
   dlgImport.classList.remove("open");
-  toast("导入完成：新增 "+added+" 条，更新 "+updated+" 条"+(res.skipped?("，跳过 "+res.skipped+" 条无效数据"):""));
+  if(!merged.ok&&merged.reason==="read-only")return;   // 只读页面：提示已由 ensureWritable 给出
+  const skipped=res.skipped?("，跳过 "+res.skipped+" 条无效数据"):"";
+  toast((merged.ok&&savedRecent)
+    ?"导入完成：新增 "+added+" 条，更新 "+updated+" 条"+skipped
+    :"⚠ 导入已生效，但没能完整保存到本机（存储空间不足或被禁用），重开 App 后可能丢失");
 }
 $("#btn-export").onclick=openExport;
 $("#btn-export-save").onclick=saveExportFile;
@@ -1110,21 +1488,47 @@ $("#btn-end").onclick=requestEnd;
 $("#btn-keep").onclick=()=>dlgEnd.classList.remove("open");
 $("#btn-finish").onclick=finishEnd;
 $("#btn-del-no").onclick=()=>dlgDel.classList.remove("open");
-$("#btn-del-yes").onclick=()=>{
-  sessions=sessions.filter(s=>s.id!==delTargetId);delTargetId=null;
-  saveSessions();dlgDel.classList.remove("open");renderStats();
+$("#btn-del-yes").onclick=async()=>{
+  const id=delTargetId,snap=delSnapshot;
+  delTargetId=null;delSnapshot=null;
+  if(!id)return;
+  const res=await mutateSessions(cur=>{
+    const i=cur.findIndex(s=>s.id===id);
+    if(i<0)return {abort:true,reason:"missing"};
+    const s=cur[i];
+    // 别的页面改过这条记录：不拿旧内容静默覆盖，交给用户决定
+    if(snap&&(s.taskName!==snap.taskName||s.durationMs!==snap.durationMs||s.startTs!==snap.startTs))return {abort:true,reason:"conflict"};
+    cur.splice(i,1);
+    return {removed:1};
+  });
+  dlgDel.classList.remove("open");renderStats();
+  if(res.aborted&&res.reason==="missing"){toast("这条记录已经被另一个页面删掉了");return}
+  if(res.aborted&&res.reason==="conflict"){toast("⚠ 这条记录已被另一个页面改过，请刷新列表后重试");return}
+  if(!res.ok){if(res.reason!=="read-only")toast("⚠ 已从列表删除，但没能保存到本机，重开后记录会回来");return}
   toast("已删除");
 };
 
 /* ---- 编辑记录：改名 + 改时长（跨日拆分的同组记录一并处理） ---- */
-let editTargetId=null;
+let editTargetId=null,editSnapshot=null,delSnapshot=null,editDurTouched=false;
 function editTargets(s){return s.gid?sessions.filter(x=>x.gid===s.gid):[s]}
 function groupTotal(list){return list.reduce((a,x)=>a+(x.durationMs||0),0)}
 function openEdit(s){
   editTargetId=s.id;
   const targets=editTargets(s),total=groupTotal(targets);
+  // 打开弹窗时的样子：保存时拿它和盘上的最新内容比对，别的页面改过就提示冲突
+  editSnapshot={id:s.id,gid:s.gid||null,
+    items:targets.map(t=>({id:t.id,taskName:t.taskName,durationMs:t.durationMs,startTs:t.startTs,endTs:t.endTs,date:t.date}))};
   $("#edit-name").value=s.taskName||"";
   $("#edit-dur-input").value=durInputText(total);
+  // 时长栏只到秒，实际存的可能是毫秒级（如 1750ms）。
+  // 明确告诉用户"没动这一栏就按原值保存"，免得以为被四舍五入过。
+  editDurTouched=false;
+  const exact=$("#edit-dur-exact");
+  if(exact){
+    exact.textContent=(total%1000)
+      ? ("当前实际时长 "+total+" 毫秒（不是整秒）。不改动这一栏就保存，会逐毫秒原样保留。")
+      : "";
+  }
   $("#edit-text").textContent="「"+(s.taskName||"专注")+"」"+fmtDur(total)
     +(targets.length>1?("，跨日拆分的 "+targets.length+" 条记录将一并修改，时长按占比分配"):"");
   renderEditDurChips();
@@ -1136,50 +1540,108 @@ function renderEditDurChips(){
   for(const m of [15,25,30,45,60]){
     const b=document.createElement("button");
     b.className="chip";b.type="button";b.textContent=m+"分";
-    b.onclick=()=>{$("#edit-dur-input").value=durInputText(m*60000)};
+    b.onclick=()=>{editDurTouched=true;$("#edit-dur-input").value=durInputText(m*60000)};
     box.appendChild(b);
   }
 }
-function doEdit(){
+/* 用户动过时长栏才按新时长算；只改名称时原始毫秒数一个不动 */
+$("#edit-dur-input").addEventListener("input",()=>{editDurTouched=true});
+async function doEdit(){
   const s=sessions.find(x=>x.id===editTargetId);
-  if(!s){dlgEdit.classList.remove("open");return}
+  if(!s||!editSnapshot){dlgEdit.classList.remove("open");return}
   const name=$("#edit-name").value.trim();
   if(!name){toast("名称不能为空");return}
-  const dur=parseDurInput($("#edit-dur-input").value);
-  if(dur===null){toast("看不懂这个时长，试试 0:25:00 或 1:30:00");return}
-  if(dur<=0){toast("时长不能为 0；想删掉这条记录请用删除按钮");return}
-  if(dur>MAX_EDIT_MS){toast("时长最多 24 小时");return}
   const targets=editTargets(s);
   const oldTotal=groupTotal(targets);
-  if(name!==s.taskName)for(const x of targets)x.taskName=name;
-  if(dur!==oldTotal)rescaleGroup(targets,dur);
-  saveSessions();renderStats();
+  // 先算分配、验边界。不通过就整次放弃：名称和时长都不落盘，不留半改的状态
+  let plan=null;
+  if(editDurTouched){
+    const dur=parseDurInput($("#edit-dur-input").value);
+    if(dur===null){toast("看不懂这个时长，试试 0:25:00 或 1:30:00");return}
+    if(dur<=0){toast("时长不能为 0；想删掉这条记录请用删除按钮");return}
+    if(dur>MAX_EDIT_MS){toast("时长最多 24 小时");return}
+    if(dur!==oldTotal){
+      plan=allocateGroupDurations(targets,dur);
+      if(!plan.ok){toast(plan.msg);return}
+    }
+  }
+  // 落盘走带锁的写入口；写之前先查冲突（别的页面改过同一条记录）
+  const gid=editSnapshot&&editSnapshot.gid;
+  const res=await mutateSessions(cur=>{
+    const curTargets=gid?cur.filter(x=>x.gid===gid):cur.filter(x=>x.id===editSnapshot.id);
+    if(curTargets.length!==targets.length)return {abort:true,reason:"conflict"};
+    for(const t of curTargets){
+      const o=editSnapshot.items.find(i=>i.id===t.id);
+      if(!o)return {abort:true,reason:"conflict"};
+      if(t.taskName!==o.taskName||t.durationMs!==o.durationMs||t.startTs!==o.startTs||t.endTs!==o.endTs)return {abort:true,reason:"conflict"};
+    }
+    for(const t of curTargets){
+      t.taskName=name;
+      // 只改有效专注时长：startTs / endTs / date 一律不动，不拿新时长反推 endTs
+      if(plan)t.durationMs=plan.values[t.id];
+    }
+    return {edited:curTargets.length};
+  });
   dlgEdit.classList.remove("open");
+  renderStats();
+  if(res.aborted&&res.reason==="missing"){toast("这条记录已经被另一个页面删掉了");return}
+  if(res.aborted&&res.reason==="conflict"){toast("⚠ 这条记录已被另一个页面改过，请刷新列表后重试");return}
+  if(!res.ok){if(res.reason!=="read-only")toast("⚠ 已修改，但没能保存到本机，重开 App 后修改会丢失");return}
   toast("已保存");
 }
-/* 把整组记录的总时长改成 newTotalMs：按各条原来的占比分下去，各段之和精确等于新总数。
-   每条"段内非专注时间"（暂停）保持不变，起止区间才不会和时长对不上。 */
-function rescaleGroup(targets,newTotalMs){
-  if(!targets.length)return;
-  const oldTotal=groupTotal(targets);
-  const gaps=targets.map(x=>Math.max(0,(x.endTs-x.startTs)-(x.durationMs||0)));
-  const shares=targets.map(x=>oldTotal>0?newTotalMs*(x.durationMs||0)/oldTotal:newTotalMs/targets.length);
-  const out=shares.map(v=>Math.floor(v));
-  const rest=newTotalMs-out.reduce((a,v)=>a+v,0);
-  if(rest>0){ // 取整剩下的零头给份额最大的那条，总数才分毫不差
-    let big=0;
-    for(let i=1;i<out.length;i++)if(shares[i]>shares[big])big=i;
-    out[big]+=rest;
+/* 把整组记录的总时长改成 newTotalMs：
+   - 按各条原来的有效时长占比分配，各段之和精确等于新总数（毫秒级不差）
+   - 每条的 startTs / endTs / date 一律不动：只改有效专注时长，不改时间区间
+   - 每条的容量 = endTs - startTs（它原来占的那段时间）。占比分配后若某段超出自己的容量，
+     整次修改拒绝并提示，不把多出来的时长溢到别的日期去
+   - 容量加起来装不下新总数时，整次修改拒绝并提示 */
+function allocateGroupDurations(targets,newTotalMs){
+  if(!targets||!targets.length)return {ok:false,msg:"没有可修改的记录"};
+  const caps=targets.map(t=>Math.max(0,(t.endTs||0)-(t.startTs||0)));
+  const durs=targets.map(t=>Math.max(0,t.durationMs||0));
+  const sumCap=caps.reduce((a,b)=>a+b,0);
+  const sumDur=durs.reduce((a,b)=>a+b,0);
+  if(newTotalMs>sumCap){
+    return {ok:false,msg:"改不了：这条记录原来的时间区间最多装 "+fmtDur(sumCap)+"，填的 "+fmtDur(newTotalMs)+" 装不下。这次修改整体不生效（名称也没有改）。"};
   }
-  targets.forEach((x,i)=>{
-    x.durationMs=Math.max(0,out[i]);
-    x.endTs=x.startTs+x.durationMs+gaps[i];
-  });
+  const shares=sumDur>0?durs.map(d=>newTotalMs*d/sumDur):targets.map(()=>newTotalMs/targets.length);
+  for(let i=0;i<targets.length;i++){
+    if(Math.floor(shares[i])>caps[i]){
+      return {ok:false,msg:"改不了：按原占比分配后，第 "+(i+1)+" 段会超过它原来的时间区间（"+fmtDur(caps[i])+"）。为免把时长挪到别的日期，这次修改整体不生效（名称也没有改）。"};
+    }
+  }
+  const out=shares.map(s=>Math.floor(s));
+  let diff=newTotalMs-out.reduce((a,b)=>a+b,0);
+  const order=shares.map((s,i)=>({i,f:s-Math.floor(s)})).sort((a,b)=>(b.f-a.f)||(a.i-b.i));
+  let guard=0;
+  while(diff>0&&guard<=order.length*64+64){
+    const idx=order[guard%order.length].i;
+    if(out[idx]<caps[idx]){out[idx]++;diff--}
+    guard++;
+  }
+  if(diff>0)return {ok:false,msg:"改不了：时长没法精确分到各段的时间区间里，这次修改整体不生效。"};
+  while(diff<0&&guard<=order.length*64+128){
+    const idx=order[guard%order.length].i;
+    if(out[idx]>0){out[idx]--;diff++}
+    guard++;
+  }
+  if(diff<0)return {ok:false,msg:"改不了：时长没法精确分到各段的时间区间里，这次修改整体不生效。"};
+  const values={};
+  let sum=0;
+  for(let i=0;i<targets.length;i++){
+    if(out[i]<0||out[i]>caps[i])return {ok:false,msg:"改不了：分配后的时长超出了某段的原始区间，这次修改整体不生效。"};
+    values[targets[i].id]=out[i];
+    sum+=out[i];
+  }
+  if(sum!==newTotalMs)return {ok:false,msg:"改不了：分配后的总时长对不上，这次修改整体不生效。"};
+  return {ok:true,values};
 }
 $("#btn-edit-no").onclick=()=>dlgEdit.classList.remove("open");
 $("#btn-edit-yes").onclick=doEdit;
-$("#edit-name").addEventListener("keydown",e=>{if(e.key==="Enter")doEdit()});
-$("#edit-dur-input").addEventListener("keydown",e=>{if(e.key==="Enter")doEdit()});
+/* 中文输入法用回车确认候选词时会派发 Enter；不排除 isComposing 会直接保存 */
+const plainEnter=e=>e.key==="Enter"&&!e.isComposing&&e.keyCode!==229;
+$("#edit-name").addEventListener("keydown",e=>{if(plainEnter(e))doEdit()});
+$("#edit-dur-input").addEventListener("keydown",e=>{if(plainEnter(e))doEdit()});
 
 /* ---- 管理快捷事项 ---- */
 function renderManageList(){
@@ -1198,8 +1660,10 @@ function resetClearBtn(){
 $("#btn-manage").onclick=()=>{resetClearBtn();renderManageList();dlgManage.classList.add("open")};
 $("#manage-list").addEventListener("click",e=>{
   const btn=e.target.closest(".rec-del");if(!btn)return;
-  recentTasks=recentTasks.filter(n=>n!==btn.dataset.name);
-  saveRecent();renderManageList();renderRecentChips();
+  const name=btn.dataset.name;
+  mutateRecent(cur=>{
+    const i=cur.indexOf(name);if(i>=0)cur.splice(i,1);
+  }).then(()=>{renderManageList();renderRecentChips()});
 });
 $("#btn-manage-clear").onclick=()=>{
   if(!recentTasks.length)return;
@@ -1209,10 +1673,10 @@ $("#btn-manage-clear").onclick=()=>{
     return;
   }
   resetClearBtn();
-  recentTasks=[];saveRecent();renderManageList();renderRecentChips();
+  mutateRecent(cur=>{cur.length=0}).then(()=>{renderManageList();renderRecentChips()});
 };
 $("#btn-manage-ok").onclick=()=>{resetClearBtn();dlgManage.classList.remove("open")};
-taskInput.addEventListener("keydown",e=>{if(e.key==="Enter")goStart()});
+taskInput.addEventListener("keydown",e=>{if(plainEnter(e))goStart()});
 $("#tabbar").addEventListener("click",e=>{const b=e.target.closest("button");if(b)switchTab(b.dataset.tab)});
 document.querySelectorAll(".overlay").forEach(ov=>{
   ov.addEventListener("click",e=>{if(e.target===ov)ov.classList.remove("open")});
@@ -1242,18 +1706,108 @@ if(window.Chart){
 /* 超过 12 小时还没结束的，多半是忘了点结束。保留下来，并用顶部常驻提醒条提示
    （不再只靠一条 2 秒的 toast，那基本等于没提示）：
    时长不准没关系 —— 结束后去统计页编辑这条记录就能修正。 */
-(function init(){
+async function boot(){
   const msg=[];
-  if(ongoing&&ongoing.startTs){
-    enterRunning();svcSyncState();
+  // 先决定"谁能写"：没有 Web Locks 时要竞选一次（拿到写权限的页面才能改数据）
+  if(!hasWebLocks){
+    await claimWriterRole();
+    setInterval(()=>{beatWriterLease().catch(()=>{})},WRITER_BEAT);
+  }
+  await migrate();                       // 旧版数据先合并进来（锁内做，失败可重试）
+  // 以盘上的状态为准：别的标签页可能刚写过一个会话
+  const disk=readOngoing();
+  if(disk&&disk.startTs){
+    ongoing=disk;
   }else{
     // startTs 缺失/损坏的脏数据要真的从盘上抹掉，不然每次启动都读出来再丢一遍
-    ongoing=null;saveOngoing();enterIdle();
+    const cleared=await mutateOngoing(cur=>{
+      if(cur&&cur.startTs)return {abort:true,reason:"other-page"};
+      return {value:null};
+    });
+    if(cleared.aborted)ongoing=readOngoing();   // 期间别的页面开始了会话，认它
   }
+  if(ongoing&&!ongoing.sessionId){
+    // 老版本存下来的会话没有组号：补一个并写回去。
+    // 之后才能靠它认出"这次专注其实已经记过账"，重开重试不会重复记账。
+    const sid=uid();
+    await mutateOngoing(cur=>{
+      if(cur&&cur.sessionId)return {abort:true,reason:"other-page"};
+      return {value:Object.assign({},cur||{},{sessionId:sid})};
+    });
+  }
+  if(ongoing&&isCommittedFocus(ongoing)){
+    // 上次专注已经记过账，只是"进行中"的状态没清掉（写盘失败 / 进程被杀）：
+    // 直接清掉。用户重开后再点一次结束也不会重复记账。
+    const sess=ongoing;
+    const cleared=await mutateOngoing(cur=>{
+      if(cur&&!sameSession(cur,sess))return {abort:true,reason:"other-page"};
+      return {value:null};
+    });
+    if(cleared.aborted)ongoing=readOngoing();
+    else{ongoing=null;msg.push("上次的专注已经保存好了，已自动恢复界面")}
+  }
+  if(ongoing)enterRunning();else enterIdle();
+  // 没有进行中的专注时这里会发 stop，顺手清掉可能残留的通知服务
+  svcSyncState();
   if(!storageOK)msg.push("浏览器禁用了本地存储，本次专注不会被保存");
+  if(!hasWebLocks&&writerRole!=="owner"){
+    msg.push("当前页面是只读的："+(writerNote||"另一个标签页正在使用本 App")+"。请到那个标签页操作，或关掉它后刷新本页");
+  }
   if(msg.length)toast(msg.join("；"));
   updateStaleBanner();
-})();
+}
+boot();
+
+/* ============ 同源多页面：别的页面改了数据，这边跟着变 ============
+   这段只负责"界面保持一致"，不负责并发安全 —— 并发安全靠上面的写锁。
+   少了它，B 页面删掉的记录在 A 页面还显示着，A 页面下次写入又把它带回去。 */
+window.addEventListener("storage",e=>{
+  if(!e.key)return;
+  if(e.key===KEY.sessions){
+    sessions=readSessions();
+    if($("#page-stats").classList.contains("active"))renderStats();
+  }else if(e.key===KEY.ongoing){
+    const v=readOngoing();
+    const same=(!v&&!ongoing)||(v&&ongoing&&v.sessionId===ongoing.sessionId
+      &&v.pausedAt===ongoing.pausedAt&&v.pausedAccumMs===ongoing.pausedAccumMs);
+    if(same)return;
+    ongoing=v;
+    if(ongoing)enterRunning();else enterIdle();
+    updateRunUI();updateStaleBanner();svcSyncState();
+  }else if(e.key===KEY.recent){
+    recentTasks=readRecent();
+    renderRecentChips();
+  }else if(e.key===WRITER_KEY){
+    // 别的页面动了写权限名单：立刻重新判断自己还是不是"能写的那个"
+    if(!hasWebLocks){
+      const rec=readWriterRecord();
+      const now=Date.now();
+      if(rec&&rec.owner===myWriterId){writerRole="owner";writerNote=""}
+      else if(rec&&rec.owner&&rec.expires>now){writerRole="follower";writerNote="另一个标签页正在使用本 App"}
+      else if(writerRole!=="owner"){writerRole="pending"}
+    }
+  }
+});
+
+/* ============ 回归测试挂钩 ============
+   tools/regression/ 里的浏览器测试脚本要直接验这几段纯逻辑，
+   所以挂到一个命名空间上。只挂纯函数和只读状态，不挂任何用户数据。 */
+window.TomatoInternals={
+  buildSegments:buildSegments,
+  allocateGroupDurations:allocateGroupDurations,
+  normalizeSession:normalizeSession,
+  isRealDateStr:isRealDateStr,
+  parseDurInput:parseDurInput,
+  fmtDur:fmtDur,
+  MIN_RECORD_MS:MIN_RECORD_MS,
+  MAX_EDIT_MS:MAX_EDIT_MS,
+  hasWebLocks:hasWebLocks,
+  writerState:()=>{
+    const st=leaseValidNow();
+    return {role:writerRole,id:myWriterId,note:writerNote,
+            canWrite:hasWebLocks||st.ok,disk:st.ok?"valid":st.reason};
+  }
+};
 </script>
 </body>
 </html>
