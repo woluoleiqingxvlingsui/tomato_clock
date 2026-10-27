@@ -1,4 +1,10 @@
 ﻿# 番茄钟 —— 把本地签名密钥上传成 GitHub Actions secrets
+#
+# ⚠⚠ 当前状态：这个自动发布流水线【已经关闭】，仓库里没有 .github/workflows/release.yml。
+#   本脚本是随之失去用途、暂时留着的。跑它没有任何好处，只会把签名密钥的副本交给 GitHub。
+#   除非你已经决定重新开启自动发布（先从 git 历史取回 workflow 文件，见 README
+#   「签名密钥与自动发布」一节），否则不要跑这个脚本。
+#
 # 用法（仓库根目录或 app/ 下都行）：
 #   powershell -ExecutionPolicy Bypass -File app\setup-release-secrets.ps1
 #   powershell -ExecutionPolicy Bypass -File app\setup-release-secrets.ps1 -Repo <owner/name>

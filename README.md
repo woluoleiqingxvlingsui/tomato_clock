@@ -73,18 +73,17 @@ python -m http.server 8848 --directory www
 > `preview-web.bat` 用的是 8848 起、占用就顺延（避开 8899，那是同作者另一个项目长期占着的端口）。
 > 网页预览和 App 数据不互通：网页存的是浏览器来源（origin）下的 localStorage，App 存的是 WebView 里的另一份。想在手机上验收请装 APK，见下。
 
-## 只想用、不想装工具链：直接下载 APK
+## 只想用、不想装工具链
 
-Releases 页面挂着编译好的签名 APK，下载 → 传到手机 → 点安装就行，**不需要装 Node / JDK / Android SDK**：
+> ⚠ **目前 Releases 页面是空的，没有现成的 APK 可下载。**
+> 本仓库没有配自动打包流水线 —— 自动发布必须把签名密钥的副本交给 GitHub 托管，
+> 这里选择**不托管**，所以流水线保持关闭（原因见下方「签名密钥与自动发布」）。
+> 想用的话有两条路：找作者要一个已签名的包，或者按下一节自己打一个（一条命令，缺什么工具脚本自动装）。
 
-**https://github.com/woluoleiqingxvlingsui/tomato_clock/releases**
+拿到 APK 之后的装法：
 
-- 下载 `tomato-clock-v1.4.0.apk`
 - 传到手机（数据线 / 微信文件传输助手 / 网盘都行），点安装；首次需要允许「未知来源」
 - 装完记得在统计页「备份与恢复」里**导一份数据**（换机或重装前再导一次）
-
-> Release 上的包和本地 `build-apk.ps1 -Release` 打的是**同一个签名**，所以能互相覆盖升级。
-> Releases 页面在第一次推标签之前是空的 —— 发布流程见下方「发布新版本到 Releases」。
 
 ## 自己改代码、打包、装到手机
 
@@ -121,28 +120,36 @@ _out\apk\tomato-clock-1.4.0-release.apk
 
 装完请按 **[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)** 逐条验收（build-apk.ps1 末尾也会提示）。
 
-### 签名相关（重要）
+### 签名密钥与自动发布（重要）
 
 - `-Release` 首次会在 `app\android\` 下生成 `tomato-release.keystore` 与 `keystore.properties`（随机 24 位口令）。
 - **这两个文件都不在 git 里**（`.gitignore` 已排除），请自己另找地方备份 —— 丢了就只能卸载重装，旧记录会清空。
 - `app\android\app\build.gradle` 只在 `keystore.properties` 存在时才声明签名配置；脚本会在开打前校验四个字段齐全、密钥文件在位，避免「打出来才发现没签名」。
+- **同一把钥匙必须签所有版本**：换了钥匙，用户装的新包就盖不住旧包（系统直接拒绝安装），只能卸载重装 —— 而记录全在 localStorage 里，卸载一次就没了。
 
-### 发布新版本到 Releases
+#### 自动发布当前是关闭的
 
-`.github/workflows/release.yml` 会在你推 `v*` 标签时自动打包并挂到 Releases 页面。它需要签名密钥，
-而密钥不能进仓库 —— 所以第一步是把本机那份传成 GitHub Actions secrets：
+仓库里**没有** `.github/workflows/release.yml`，推 `v*` 标签不会触发任何自动打包。原因很直接：
+
+自动打包要在 GitHub 的机器上签名，而签名密钥不能进仓库（仓库是公开的）。唯一的办法是把本机那把
+密钥的副本传成 GitHub Actions secrets —— 这等于**把自己 App 的签名权分一份给 GitHub**：不公开、
+只有仓库管理员能读，但任何能往这个仓库 push 的人，都能用这把密钥签出一个「看起来是你的番茄钟」的包。
+这个项目选择不托管，所以流水线保持关闭；`app/setup-release-secrets.ps1` 也一并失去用途
+（文件留着没删 —— 将来真要开自动发布，正好是它派上用场）。
+
+#### 所以发布新版本走本机
 
 ```
-powershell -ExecutionPolicy Bypass -File app\setup-release-secrets.ps1
-git tag -a v1.4.0 -m "番茄钟 v1.4.0"
-git push origin v1.4.0
+powershell -ExecutionPolicy Bypass -File app\build-apk.ps1 -Release
 ```
 
-- 脚本会上传 4 个 secret：`KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`。
-  **这等于把签名密钥的副本交给 GitHub 托管**：不公开、只有仓库管理员能读，但任何能改这个仓库的人
-  都能用这个密钥签出「看起来是你的 App」的包。不接受这个前提就别跑这步，Release 流程保持关闭即可。
-- CI 打出来的包和本机 `build-apk.ps1 -Release` 是**同一个签名**，所以能互相覆盖安装。
-- 工作流会先校验标签和 `app/package.json`、`app/android/app/build.gradle` 的版本号三者一致，对不上直接失败。
+包在 `_out\apk\tomato-clock-<版本>-release.apk`，手动传到
+[Releases 页面](https://github.com/woluoleiqingxvlingsui/tomato_clock/releases) 即可。
+
+> 将来如果改主意要开自动发布：`.github/workflows/release.yml` 还在 git 历史里
+> （`git log --all --diff-filter=D -- .github/workflows/release.yml` 能找到删掉它的那次提交），
+> 取回来后先把密钥上传成 4 个 secret（`KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` /
+> `KEY_PASSWORD`，`app/setup-release-secrets.ps1` 就是干这个的），再推 `v<版本>` 标签。
 
 ## 从零克隆后怎么跑
 
@@ -168,7 +175,7 @@ tomato_clock/
 │   ├── capacitor.config.json
 │   ├── build-apk.ps1           # 一键装工具链 + 打包（debug / release / -Install）
 │   ├── install-to-phone.ps1    # adb 一键装机
-│   ├── setup-release-secrets.ps1 # 把签名密钥传成 GitHub Actions secrets
+│   ├── setup-release-secrets.ps1 # 把签名密钥传成 GitHub Actions secrets（自动发布关闭中，暂不用）
 │   ├── preview-web.ps1         # 本地起服务预览网页版
 │   ├── package.json            # Capacitor 依赖与版本号
 │   └── android/                # 安卓工程（cap add 生成）
@@ -180,7 +187,6 @@ tomato_clock/
 ├── docs/
 │   ├── ACCEPTANCE.md           # 装机验收清单 + 已知限制
 │   └── screenshots/            # README 顶部引用的 6 张截图（见目录内说明）
-├── .github/workflows/release.yml  # 推 v* 标签 → 自动打包并发布到 Releases
 ├── legacy/                     # 旧桌面网页版（倒计时版），仅留档
 ├── preview-web.bat             # 双击预览网页版
 ├── LICENSE                     # MIT
