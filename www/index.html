@@ -158,6 +158,43 @@ button{font-family:inherit}
 .dialog p{font-size:13px;color:var(--muted);margin-bottom:20px}
 .dialog-actions{display:flex;gap:12px}
 .dialog .btn{padding:0 10px}
+.field-lab{font-size:12px;color:var(--muted);text-align:left;margin:0 0 6px}
+.dialog p.field-hint{font-size:11.5px;color:var(--muted);margin:8px 0 0;line-height:1.5}
+.dialog .chips{justify-content:center;margin:10px 0 0}
+.dialog p.warn{color:#b9793c;margin:0 0 16px;line-height:1.6}
+.run-actions .btn{font-size:15px}
+
+/* ---------- 「忘了点结束」常驻提醒条 ----------
+   固定在屏幕顶部：不占文档流（不把下面的计时区顶歪），不自动消失，
+   关掉后本次专注不再打扰。z-index 压在弹层(100)之下、tabbar(50)之上。 */
+#stale-banner{
+  position:fixed;left:50%;top:calc(10px + env(safe-area-inset-top));
+  transform:translateX(-50%);
+  width:min(90vw,420px);z-index:80;
+  display:flex;align-items:flex-start;gap:8px;
+  padding:11px 12px;border-radius:14px;
+  border:1px solid #f0d7a4;background:rgba(255,247,233,.97);
+  color:#93631c;font-size:12.5px;line-height:1.55;
+  box-shadow:0 8px 22px rgba(150,115,50,.18);
+  backdrop-filter:blur(12px);
+}
+#stale-banner .b-ico{flex:none;font-size:13px;line-height:1.5}
+#stale-banner .b-txt{flex:1;min-width:0}
+#stale-banner .b-x{
+  flex:none;border:none;background:none;color:#c09a5c;font-size:18px;line-height:1;
+  cursor:pointer;padding:0 3px;border-radius:6px;
+}
+#stale-banner .b-x:active{background:rgba(0,0,0,.06)}
+
+/* ---------- 备份 / 恢复 ---------- */
+.backup-row{display:flex;gap:10px}
+.backup-row .btn{font-size:14px;height:46px}
+.json-area{
+  width:100%;height:150px;resize:vertical;border-radius:14px;border:1.5px solid rgba(0,0,0,.08);
+  background:#fff;padding:10px 12px;font-size:12px;line-height:1.5;color:var(--text);
+  outline:none;font-family:ui-monospace,Menlo,Consolas,"Courier New",monospace;
+}
+.json-area:focus{border-color:var(--accent)}
 
 #toast{
   position:fixed;left:50%;bottom:calc(104px + env(safe-area-inset-bottom));
@@ -174,6 +211,12 @@ button{font-family:inherit}
 
 <!-- ================= 专注页 ================= -->
 <main id="page-focus" class="page active">
+  <!-- 「忘了点结束」常驻提醒条：默认隐藏，条件满足时由 JS 显示 -->
+  <div id="stale-banner" class="hidden">
+    <span class="b-ico">⚠</span>
+    <span class="b-txt" id="stale-txt"></span>
+    <button id="stale-x" class="b-x" type="button" aria-label="关闭提醒">×</button>
+  </div>
   <section id="focus-idle">
     <div class="hero-title">番茄钟</div>
     <p class="hero-sub">准备好就开始吧</p>
@@ -229,6 +272,21 @@ button{font-family:inherit}
     <ul class="records" id="rec-list"></ul>
     <div class="chart-empty hidden" id="rec-empty" style="position:static;padding:20px 0 10px">还没有专注记录，去开始第一次专注吧</div>
   </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">备份与恢复</span>
+      <span class="card-note">文件只由你自己保管</span>
+    </div>
+    <p class="card-note" style="margin-bottom:12px;line-height:1.6">
+      导出一份 JSON 存到手机或电脑。换机、重装、debug 换 release 之前先导一份，记录就不会丢。
+    </p>
+    <div class="backup-row">
+      <button id="btn-export" class="btn btn-ghost">导出数据</button>
+      <button id="btn-import" class="btn btn-ghost">导入数据</button>
+    </div>
+    <input type="file" id="file-import" accept=".json,application/json" class="hidden">
+  </section>
 </main>
 
 <!-- ================= 底部导航 ================= -->
@@ -260,6 +318,7 @@ button{font-family:inherit}
     <h3>确定结束这次专注吗？</h3>
     <div class="big" id="end-dur">0分钟</div>
     <p id="end-task"></p>
+    <p class="warn" id="end-warn" style="display:none"></p>
     <div class="dialog-actions">
       <button id="btn-keep" class="btn btn-ghost">继续专注</button>
       <button id="btn-finish" class="btn btn-danger">确认结束</button>
@@ -280,14 +339,19 @@ button{font-family:inherit}
 </div>
 
 <!-- ================= 修改名称 ================= -->
-<div class="overlay" id="dlg-rename">
-  <div class="dialog">
-    <h3>修改事项名称</h3>
-    <p id="rename-text" style="margin-bottom:12px"></p>
-    <input id="rename-input" class="task-input" maxlength="20" placeholder="输入新的名称">
-    <div class="dialog-actions" style="margin-top:18px">
-      <button id="btn-rename-no" class="btn btn-ghost">取消</button>
-      <button id="btn-rename-yes" class="btn btn-danger">保存</button>
+<div class="overlay" id="dlg-edit">
+  <div class="dialog" style="width:min(90%,350px)">
+    <h3>编辑记录</h3>
+    <p id="edit-text" style="margin-bottom:12px"></p>
+    <div class="field-lab">事项名称</div>
+    <input id="edit-name" class="task-input" maxlength="20" placeholder="输入新的名称">
+    <div class="field-lab" style="margin-top:14px">专注时长</div>
+    <input id="edit-dur-input" class="task-input" inputmode="numeric" placeholder="0:25:00">
+    <div class="chips" id="edit-dur-chips"></div>
+    <p class="field-hint">格式 时:分:秒，如 0:25:00。只写两段按「分:秒」算（1:30 就是 1 分 30 秒）；只写数字按分钟算。最长 24 小时。</p>
+    <div class="dialog-actions" style="margin-top:16px">
+      <button id="btn-edit-no" class="btn btn-ghost">取消</button>
+      <button id="btn-edit-yes" class="btn btn-danger">保存</button>
     </div>
   </div>
 </div>
@@ -301,6 +365,37 @@ button{font-family:inherit}
     <div class="dialog-actions" style="margin-top:14px">
       <button id="btn-manage-clear" class="btn btn-ghost">清空</button>
       <button id="btn-manage-ok" class="btn btn-danger">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 导出数据 ================= -->
+<div class="overlay" id="dlg-export">
+  <div class="dialog" style="width:min(92%,380px);text-align:left">
+    <h3>导出数据</h3>
+    <p id="export-info" style="margin-bottom:10px"></p>
+    <textarea id="export-text" class="json-area" readonly spellcheck="false"></textarea>
+    <p class="field-hint">手机上点「保存到文件」会弹出系统文件选择器；也可以长按上面的文本全选复制。</p>
+    <button id="btn-export-copy" class="mg-btn" type="button" style="margin:10px 2px 0 0">复制到剪贴板</button>
+    <div class="dialog-actions" style="margin-top:12px">
+      <button id="btn-export-cancel" class="btn btn-ghost">取消</button>
+      <button id="btn-export-save" class="btn btn-danger">保存到文件</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 导入数据 ================= -->
+<div class="overlay" id="dlg-import">
+  <div class="dialog" style="width:min(92%,380px);text-align:left">
+    <h3>导入数据</h3>
+    <p class="field-hint" style="margin:0 0 10px">
+      按记录 id 合并：同一条记录以导入的为准，本机独有的记录保留，不会被覆盖删除。
+    </p>
+    <textarea id="import-text" class="json-area" placeholder="把导出的 JSON 粘到这里，或点下面的「选择文件」" spellcheck="false"></textarea>
+    <div class="dialog-actions" style="margin-top:12px">
+      <button id="btn-import-cancel" class="btn btn-ghost">取消</button>
+      <button id="btn-import-file" class="btn btn-ghost">选择文件</button>
+      <button id="btn-import-ok" class="btn btn-danger">导入</button>
     </div>
   </div>
 </div>
@@ -406,6 +501,37 @@ function fmtCard(ms){
   if(h>0)return h+":"+pad2(m)+":"+pad2(sec);
   return Math.floor(s/60)+":"+pad2(sec);
 }
+/* ============ 时长输入 ============
+   用户手填的时长一律走这里解析，避免各处各写一套正则：
+   "90"     → 90 分钟（裸数字按分钟）
+   "25:00"  → 25 分 0 秒（两段 = 分:秒）
+   "1:30:00"→ 1 小时 30 分（三段 = 时:分:秒）
+   "1.5小时" / "45秒" 也认。解析不出来返回 null，调用方自己提示。
+   两段绝不能当成 时:分 —— 输入框里显示的就是 "0:25:00" 这种三段写法，
+   两段按 分:秒 解释才能和显示值原样往返；搞混了会把 25 分钟记成 25 小时。 */
+function parseDurInput(str){
+  const s=String(str==null?"":str).trim().toLowerCase().replace(/\s+/g,"");
+  if(!s)return null;
+  let m;
+  if(m=s.match(/^(\d+(?:\.\d+)?)(小时|小時|h|hr|hours?)$/))return Math.round(parseFloat(m[1])*3600000);
+  if(m=s.match(/^(\d+(?:\.\d+)?)(分钟|分|min|mins|minutes?)$/))return Math.round(parseFloat(m[1])*60000);
+  if(m=s.match(/^(\d+(?:\.\d+)?)(秒|s|sec|secs|seconds?)$/))return Math.round(parseFloat(m[1])*1000);
+  if(m=s.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/)){
+    const a=+m[1],b=+m[2];
+    if(m[3]===undefined)return b>59?null:(a*60+b)*1000;      // 两段 = 分:秒
+    const c=+m[3];                                           // 三段 = 时:分:秒
+    if(b>59||c>59)return null;
+    return ((a*60+b)*60+c)*1000;
+  }
+  if(m=s.match(/^(\d+(?:\.\d+)?)$/))return Math.round(parseFloat(m[1])*60000);
+  return null;
+}
+/* 与 parseDurInput 互逆：毫秒 → 输入框里该显示的文本。
+   一律用三段 时:分:秒，避免"25:00"到底是 25 分钟还是 25 小时的歧义。 */
+function durInputText(ms){
+  const s=Math.max(0,Math.round((ms||0)/1000));
+  return Math.floor(s/3600)+":"+pad2(Math.floor(s/60)%60)+":"+pad2(s%60);
+}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function hexA(hex,a){const n=parseInt(hex.slice(1),16);return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")"}
@@ -413,7 +539,18 @@ function hexA(hex,a){const n=parseInt(hex.slice(1),16);return "rgba("+((n>>16)&2
 /* ============ 专注计时 ============ */
 const $=s=>document.querySelector(s);
 const idleSec=$("#focus-idle"),runSec=$("#focus-running");
-const sheet=$("#sheet"),dlgEnd=$("#dlg-end"),dlgDel=$("#dlg-del"),dlgRename=$("#dlg-rename"),dlgManage=$("#dlg-manage"),taskInput=$("#task-input");
+const sheet=$("#sheet"),dlgEnd=$("#dlg-end"),dlgDel=$("#dlg-del"),dlgEdit=$("#dlg-edit"),dlgManage=$("#dlg-manage"),dlgExport=$("#dlg-export"),dlgImport=$("#dlg-import"),taskInput=$("#task-input");
+/* 超过这个时长还没结束的专注，多半是忘了点结束：结束时给出醒目提醒，
+   时长本身不准没关系，结束后可以在统计页编辑这条记录修正。 */
+const STALE_MS=12*3600*1000;
+/* 手动改时长时的上限：一天。再长就明显是手滑/误输入，不该进统计。 */
+const MAX_EDIT_MS=24*3600*1000;
+
+/* 「忘了点结束」只有一个判定口径：净专注时长（elapsedMs）。
+   它就是最终会被记录下来的那个数，和结束弹层里显示的时长是同一个值，
+   所以不会出现「提示说 13 小时、记录却是 0 秒」这种自相矛盾。
+   （早先两处一个用墙钟含暂停、一个用净专注，同一条记录在两处结论不同。） */
+function isStale(){return !!ongoing&&elapsedMs()>STALE_MS}
 
 /* 核心：已专注时长 = 当前时间 - 开始时间 - 暂停累计，与 setInterval 无关，
    切后台/锁屏/页面被冻结都不会影响准确性 */
@@ -444,8 +581,22 @@ function updateRunUI(){
 function renderRunTime(){
   if(ongoing&&!runSec.classList.contains("hidden"))$("#run-time").textContent=fmtClock(elapsedMs());
 }
-setInterval(renderRunTime,250);
-document.addEventListener("visibilitychange",()=>{if(!document.hidden)renderRunTime()});
+/* 「忘了点结束」的常驻提醒条。
+   只在「显示/隐藏」或「分钟数变了」时才动 DOM，避免每 250ms 重排一次。 */
+let staleDismissed=false,staleLastKey="";
+function updateStaleBanner(){
+  const box=$("#stale-banner");
+  const show=isStale()&&!staleDismissed;
+  const key=show?String(Math.floor(elapsedMs()/60000)):"";
+  if(key===staleLastKey)return;
+  staleLastKey=key;
+  box.classList.toggle("hidden",!show);
+  if(show)$("#stale-txt").textContent="有条专注已持续 "+fmtDur(elapsedMs())
+    +"，可能忘了点结束。不想保留就点「结束」；时长记错了，去统计页编辑这条记录就能改。";
+}
+$("#stale-x").onclick=()=>{staleDismissed=true;updateStaleBanner()};
+setInterval(()=>{renderRunTime();updateStaleBanner()},250);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden){renderRunTime();updateStaleBanner()}});
 
 /* ---- 开始弹层 ---- */
 function openSheet(){
@@ -473,11 +624,11 @@ function goStart(){
   if(ongoing){closeSheet();enterRunning();return}
   const name=taskInput.value.trim()||"专注";
   ongoing={taskName:name,startTs:Date.now(),pausedAccumMs:0,pausedAt:null,pauseLog:[]};
-  saveOngoing();
+  staleDismissed=false;saveOngoing();
   recentTasks=[name,...recentTasks.filter(n=>n!==name)].slice(0,8);
   saveRecent();
   svcCall("start",{taskName:name,startTs:String(ongoing.startTs),pausedAccumMs:"0",pausedAt:"-1"});
-  closeSheet();enterRunning();vibrate(20);beep("start");
+  closeSheet();enterRunning();updateStaleBanner();vibrate(20);beep("start");
 }
 
 /* ---- 暂停 / 结束 ---- */
@@ -495,10 +646,22 @@ function togglePause(){
 }
 function requestEnd(){
   if(!ongoing)return;
-  $("#end-dur").textContent=fmtDur(elapsedMs());
+  const dur=elapsedMs();
+  $("#end-dur").textContent=fmtDur(dur);
   $("#end-task").textContent="「"+ongoing.taskName+"」本次专注";
+  // 忘了点结束的典型症状就是时长离谱地长。这里只提醒不拦截：
+  // 时长不准没关系，记下来之后去统计页编辑这条记录就能修正。
+  // 判定和顶部常驻提醒条用同一个口径（isStale），两处结论不会打架。
+  const warn=$("#end-warn");
+  if(isStale()){
+    warn.textContent="⚠ 已持续 "+fmtDur(dur)+"，可能忘了点结束。时长不准没关系，结束后可在统计页编辑这条记录修正。";
+    warn.style.display="";
+  }else{
+    warn.textContent="";warn.style.display="none";
+  }
   dlgEnd.classList.add("open");
 }
+
 /* 结束时按本地零点把跨日专注拆成多条记录（每天一笔账）：
    每段扣除落在该段内的暂停时间，各段之和=本次总专注时长，秒级无损 */
 function finishEnd(){
@@ -527,6 +690,7 @@ function finishEnd(){
   saveSessions();
   ongoing=null;saveOngoing();enterIdle();
   svcCall("stop");
+  updateStaleBanner();
   vibrate(30);beep("end");
   // 三种结局只提示一次，避免连续 toast 互相顶掉：
   // 写盘失败 > 一条没拆出来（全程暂停） > 正常记录成功
@@ -721,7 +885,7 @@ function renderRecords(){
     return '<li><span class="rec-dot" style="background:'+colorFor(name)+'"></span>'
       +'<div class="rec-main"><div class="rec-name">'+esc(name)+'</div><div class="rec-sub">'+ds+" · "+range+'</div></div>'
       +'<span class="rec-dur">'+fmtDur(s.durationMs)+'</span>'
-      +'<button class="rec-edit" data-id="'+esc(s.id)+'" aria-label="改名">'+PENCIL_SVG+"</button>"
+      +'<button class="rec-edit" data-id="'+esc(s.id)+'" aria-label="编辑">'+PENCIL_SVG+"</button>"
       +'<button class="rec-del" data-id="'+esc(s.id)+'" aria-label="删除">'+TRASH_SVG+"</button></li>";
   }).join("")
     +(sorted.length>shown.length
@@ -731,7 +895,7 @@ function renderRecords(){
 $("#rec-list").addEventListener("click",e=>{
   if(e.target.closest("#btn-rec-more")){recLimit+=30;renderRecords();return}
   const edit=e.target.closest(".rec-edit");
-  if(edit){const s=sessions.find(x=>x.id===edit.dataset.id);if(s)openRename(s);return}
+  if(edit){const s=sessions.find(x=>x.id===edit.dataset.id);if(s)openEdit(s);return}
   const btn=e.target.closest(".rec-del");if(!btn)return;
   const s=sessions.find(x=>x.id===btn.dataset.id);if(!s)return;
   delTargetId=s.id;
@@ -742,6 +906,153 @@ $("#rec-list").addEventListener("click",e=>{
 function renderStats(){
   renderOverview();renderPie();renderTrendChips();renderTrend();renderRecords();
 }
+
+/* ============ 备份 / 恢复（JSON 导出导入） ============
+   数据本来就只在本机，导出就是把 localStorage 里的内容拼成一份 JSON，
+   由用户自己保存到手机/电脑 —— 不经过任何服务器。
+   导入按记录 id 合并：同 id 以导入的为准，本机独有的记录保留，不会被删掉。
+   原生端走 SAF（系统文件选择器），不额外申请任何权限；
+   浏览器端走 Blob 下载 / 文件选择框。 */
+const DT=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())
+  ?(window.Capacitor.Plugins.DataTransfer||null):null;
+
+function exportPayload(){
+  return {
+    app:"tomato-clock",
+    format:1,
+    exportedAt:new Date().toISOString(),
+    sessions:sessions,
+    recentTasks:recentTasks
+  };
+}
+function exportFilename(){
+  const d=new Date(),p=n=>String(n).padStart(2,"0");
+  return "tomato-clock-"+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes())+".json";
+}
+function openExport(){
+  const text=JSON.stringify(exportPayload(),null,2);
+  $("#export-text").value=text;
+  $("#export-info").textContent="共 "+sessions.length+" 条记录 · "+recentTasks.length+" 个快捷事项 · "
+    +(text.length/1024).toFixed(1)+" KB";
+  dlgExport.classList.add("open");
+}
+async function saveExportFile(){
+  const text=$("#export-text").value;
+  if(!text){toast("没有可导出的内容");return}
+  const name=exportFilename();
+  if(DT&&DT.saveJson){ // 原生：系统文件选择器（SAF），不申请存储权限
+    try{
+      const r=await DT.saveJson({json:text,filename:name});
+      if(r&&r.cancelled){toast("已取消保存");return}
+      if(r&&r.ok===false){toast("没有保存成功，请重试");return}
+      dlgExport.classList.remove("open");
+      toast("已保存 "+name);
+      return;
+    }catch(e){/* 真出错才落到浏览器方案 */}
+  }
+  try{
+    const blob=new Blob([text],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=name;document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},1000);
+    dlgExport.classList.remove("open");
+    toast("已导出 "+name);
+  }catch(e){toast("保存失败，试试「复制到剪贴板」")}
+}
+async function copyExport(){
+  const text=$("#export-text").value;
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(text);
+    else{
+      const ta=$("#export-text");ta.focus();ta.select();
+      if(!document.execCommand("copy"))throw new Error("copy failed");
+    }
+    toast("已复制到剪贴板");
+  }catch(e){toast("复制失败，请长按文本手动复制")}
+}
+/* 导入进来的记录逐条体检：缺字段能补的补，补不了的整条丢掉，不让脏数据进统计 */
+function normalizeSession(r){
+  if(!r||typeof r!=="object")return null;
+  const taskName=typeof r.taskName==="string"&&r.taskName.trim()?r.taskName.trim():"专注";
+  let startTs=Number(r.startTs),endTs=Number(r.endTs),durationMs=Number(r.durationMs);
+  if(!isFinite(startTs)||startTs<=0)return null;
+  if(!isFinite(endTs)||endTs<startTs)endTs=startTs;
+  if(!isFinite(durationMs)||durationMs<0)durationMs=Math.max(0,endTs-startTs);
+  durationMs=Math.min(durationMs,365*24*3600*1000); // 离谱的值夹住，别把图表撑坏
+  const id=typeof r.id==="string"&&r.id?r.id:uid();
+  const date=typeof r.date==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(r.date)?r.date:dateStr(new Date(startTs));
+  const o={id,taskName,startTs,endTs,durationMs,date};
+  if(typeof r.gid==="string"&&r.gid)o.gid=r.gid;
+  return o;
+}
+function parseImport(text){
+  let data;
+  try{data=JSON.parse(text)}catch(e){return {error:"这不是合法的 JSON 文件"}}
+  if(!data||typeof data!=="object")return {error:"文件内容不是一个对象"}
+  const list=Array.isArray(data.sessions)?data.sessions:(Array.isArray(data)?data:null);
+  if(!list)return {error:"文件里找不到 sessions 数组"}
+  const clean=[];let skipped=0;
+  for(const r of list){const s=normalizeSession(r);if(s)clean.push(s);else skipped++}
+  const recent=Array.isArray(data.recentTasks)
+    ?data.recentTasks.filter(n=>typeof n==="string"&&n.trim()).slice(0,8):[];
+  return {clean,skipped,recent};
+}
+function openImport(){
+  $("#import-text").value="";
+  dlgImport.classList.add("open");
+}
+async function pickImportFile(){
+  if(DT&&DT.pickJson){ // 原生：系统文件选择器
+    try{
+      const r=await DT.pickJson();
+      if(r&&r.cancelled){toast("已取消选择");return}
+      if(!r||!r.json){toast("没有选中文件");return}
+      $("#import-text").value=r.json;
+      toast("已读取文件，点「导入」确认");
+      return;
+    }catch(e){/* 真出错才落到浏览器方案 */}
+  }
+  $("#file-import").click();
+}
+function doImport(){
+  const text=$("#import-text").value.trim();
+  if(!text){toast("先选个文件，或把 JSON 粘进来");return}
+  const res=parseImport(text);
+  if(res.error){toast(res.error);return}
+  const byId=new Map();
+  for(const s of sessions)byId.set(s.id,s);
+  let added=0,updated=0;
+  for(const s of res.clean){
+    if(byId.has(s.id)){updated++;Object.assign(byId.get(s.id),s)}
+    else{added++;byId.set(s.id,s)}
+  }
+  sessions=[...byId.values()];
+  if(res.recent.length){
+    const names=res.recent.concat(recentTasks.filter(n=>!res.recent.includes(n)));
+    recentTasks=names.slice(0,8);
+  }
+  saveSessions();saveRecent();renderStats();
+  dlgImport.classList.remove("open");
+  toast("导入完成：新增 "+added+" 条，更新 "+updated+" 条"+(res.skipped?("，跳过 "+res.skipped+" 条无效数据"):""));
+}
+$("#btn-export").onclick=openExport;
+$("#btn-export-save").onclick=saveExportFile;
+$("#btn-export-copy").onclick=copyExport;
+$("#btn-export-cancel").onclick=()=>dlgExport.classList.remove("open");
+$("#btn-import").onclick=openImport;
+$("#btn-import-file").onclick=pickImportFile;
+$("#btn-import-cancel").onclick=()=>dlgImport.classList.remove("open");
+$("#btn-import-ok").onclick=doImport;
+$("#file-import").addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0];
+  e.target.value="";
+  if(!f)return;
+  const fr=new FileReader();
+  fr.onload=()=>{$("#import-text").value=String(fr.result||"");toast("已读取文件，点「导入」确认")};
+  fr.onerror=()=>toast("读取文件失败");
+  fr.readAsText(f,"utf-8");
+});
 
 /* ============ 提示 / 震动 / 音效 ============ */
 function toast(msg){
@@ -780,31 +1091,70 @@ $("#btn-del-yes").onclick=()=>{
   toast("已删除");
 };
 
-/* ---- 记录改名：跨日拆分的同组记录一并修改 ---- */
-let renameTargetId=null;
-function renameTargets(s){return s.gid?sessions.filter(x=>x.gid===s.gid):[s]}
-function openRename(s){
-  renameTargetId=s.id;
-  $("#rename-input").value=s.taskName||"";
-  const n=renameTargets(s).length;
-  $("#rename-text").textContent="原名称「"+(s.taskName||"专注")+"」"+(n>1?("，跨日拆分的 "+n+" 条记录将一并修改"):"");
-  dlgRename.classList.add("open");
-  setTimeout(()=>{const inp=$("#rename-input");inp.focus();inp.select()},150);
+/* ---- 编辑记录：改名 + 改时长（跨日拆分的同组记录一并处理） ---- */
+let editTargetId=null;
+function editTargets(s){return s.gid?sessions.filter(x=>x.gid===s.gid):[s]}
+function groupTotal(list){return list.reduce((a,x)=>a+(x.durationMs||0),0)}
+function openEdit(s){
+  editTargetId=s.id;
+  const targets=editTargets(s),total=groupTotal(targets);
+  $("#edit-name").value=s.taskName||"";
+  $("#edit-dur-input").value=durInputText(total);
+  $("#edit-text").textContent="「"+(s.taskName||"专注")+"」"+fmtDur(total)
+    +(targets.length>1?("，跨日拆分的 "+targets.length+" 条记录将一并修改，时长按占比分配"):"");
+  renderEditDurChips();
+  dlgEdit.classList.add("open");
+  setTimeout(()=>{const inp=$("#edit-name");inp.focus();inp.select()},150);
 }
-function doRename(){
-  const s=sessions.find(x=>x.id===renameTargetId);
-  if(!s){dlgRename.classList.remove("open");return}
-  const name=$("#rename-input").value.trim();
+function renderEditDurChips(){
+  const box=$("#edit-dur-chips");box.innerHTML="";
+  for(const m of [15,25,30,45,60]){
+    const b=document.createElement("button");
+    b.className="chip";b.type="button";b.textContent=m+"分";
+    b.onclick=()=>{$("#edit-dur-input").value=durInputText(m*60000)};
+    box.appendChild(b);
+  }
+}
+function doEdit(){
+  const s=sessions.find(x=>x.id===editTargetId);
+  if(!s){dlgEdit.classList.remove("open");return}
+  const name=$("#edit-name").value.trim();
   if(!name){toast("名称不能为空");return}
-  if(name===s.taskName){dlgRename.classList.remove("open");return}
-  for(const x of renameTargets(s))x.taskName=name;
+  const dur=parseDurInput($("#edit-dur-input").value);
+  if(dur===null){toast("看不懂这个时长，试试 0:25:00 或 1:30:00");return}
+  if(dur<=0){toast("时长不能为 0；想删掉这条记录请用删除按钮");return}
+  if(dur>MAX_EDIT_MS){toast("时长最多 24 小时");return}
+  const targets=editTargets(s);
+  const oldTotal=groupTotal(targets);
+  if(name!==s.taskName)for(const x of targets)x.taskName=name;
+  if(dur!==oldTotal)rescaleGroup(targets,dur);
   saveSessions();renderStats();
-  dlgRename.classList.remove("open");
-  toast("已改名");
+  dlgEdit.classList.remove("open");
+  toast("已保存");
 }
-$("#btn-rename-no").onclick=()=>dlgRename.classList.remove("open");
-$("#btn-rename-yes").onclick=doRename;
-$("#rename-input").addEventListener("keydown",e=>{if(e.key==="Enter")doRename()});
+/* 把整组记录的总时长改成 newTotalMs：按各条原来的占比分下去，各段之和精确等于新总数。
+   每条"段内非专注时间"（暂停）保持不变，起止区间才不会和时长对不上。 */
+function rescaleGroup(targets,newTotalMs){
+  if(!targets.length)return;
+  const oldTotal=groupTotal(targets);
+  const gaps=targets.map(x=>Math.max(0,(x.endTs-x.startTs)-(x.durationMs||0)));
+  const shares=targets.map(x=>oldTotal>0?newTotalMs*(x.durationMs||0)/oldTotal:newTotalMs/targets.length);
+  const out=shares.map(v=>Math.floor(v));
+  const rest=newTotalMs-out.reduce((a,v)=>a+v,0);
+  if(rest>0){ // 取整剩下的零头给份额最大的那条，总数才分毫不差
+    let big=0;
+    for(let i=1;i<out.length;i++)if(shares[i]>shares[big])big=i;
+    out[big]+=rest;
+  }
+  targets.forEach((x,i)=>{
+    x.durationMs=Math.max(0,out[i]);
+    x.endTs=x.startTs+x.durationMs+gaps[i];
+  });
+}
+$("#btn-edit-no").onclick=()=>dlgEdit.classList.remove("open");
+$("#btn-edit-yes").onclick=doEdit;
+$("#edit-name").addEventListener("keydown",e=>{if(e.key==="Enter")doEdit()});
+$("#edit-dur-input").addEventListener("keydown",e=>{if(e.key==="Enter")doEdit()});
 
 /* ---- 管理快捷事项 ---- */
 function renderManageList(){
@@ -864,18 +1214,20 @@ if(window.Chart){
 }
 
 /* ============ 启动：恢复进行中的专注 ============ */
-/* 超过这个时长的"进行中"直接判为忘记结束：留着的话，几天后再点结束会按零点
-   一次性写出好几天的假记录（每段还都带满时长） */
-const STALE_MS=12*3600*1000;
+/* 超过 12 小时还没结束的，多半是忘了点结束。保留下来，并用顶部常驻提醒条提示
+   （不再只靠一条 2 秒的 toast，那基本等于没提示）：
+   时长不准没关系 —— 结束后去统计页编辑这条记录就能修正。 */
 (function init(){
   const msg=[];
-  if(ongoing&&ongoing.startTs&&Date.now()-ongoing.startTs>STALE_MS){
-    ongoing=null;saveOngoing();enterIdle();svcCall("stop");
-    msg.push("上次有一条超过 12 小时没结束的专注，已作废");
-  }else if(ongoing&&ongoing.startTs){enterRunning();svcSyncState()}
-  else{ongoing=null;enterIdle()}
+  if(ongoing&&ongoing.startTs){
+    enterRunning();svcSyncState();
+  }else{
+    // startTs 缺失/损坏的脏数据要真的从盘上抹掉，不然每次启动都读出来再丢一遍
+    ongoing=null;saveOngoing();enterIdle();
+  }
   if(!storageOK)msg.push("浏览器禁用了本地存储，本次专注不会被保存");
   if(msg.length)toast(msg.join("；"));
+  updateStaleBanner();
 })();
 </script>
 </body>

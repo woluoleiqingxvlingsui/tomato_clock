@@ -16,6 +16,7 @@ public class MainActivity extends BridgeActivity {
         // 必须在 super.onCreate 之前：registerPlugin 只是往 bridgeBuilder 里登记，
         // 实例化发生在 super.onCreate 末尾的 load() 里
         registerPlugin(TimerServicePlugin.class);
+        registerPlugin(DataTransferPlugin.class);
         super.onCreate(savedInstanceState);
         installInsetsListener();
     }

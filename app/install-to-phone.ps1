@@ -88,7 +88,7 @@ $ErrorActionPreference = $prevEap
 
 if ($code -eq 0 -and $out -match 'Success') {
   Write-Host "`n安装成功。手机上打开「番茄钟」即可。" -ForegroundColor Green
-  Write-Host '首次启动会请求通知权限（Android 13+），允许后锁屏/通知栏才有计时卡。'
+  Write-Host '第一次点「开始专注」时会请求通知权限（Android 13+），允许后锁屏/通知栏才有计时卡。'
   Write-Host '请按 docs\ACCEPTANCE.md 逐条验收。'
 } else {
   Write-Host $out -ForegroundColor Red

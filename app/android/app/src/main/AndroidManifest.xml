@@ -46,4 +46,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 震动反馈（开始 / 暂停 / 结束的手感）。WebView 的 navigator.vibrate 需要它才生效，
+         否则那三处调用会静默失败。普通系统权限，不涉及位置 / 存储 / 网络。 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 </manifest>
