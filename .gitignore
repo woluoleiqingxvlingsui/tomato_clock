@@ -10,6 +10,12 @@ node_modules/
 *.jks
 keystore.properties
 
+# 截图脚本（docs/screenshots/regenerate.py）的临时页面，中途打断会残留
+www/__shot.html
+
+# 构建时生成的项目内 Gradle 镜像配置（build-apk.ps1 每次构建都会重写）
+app/android/mirrors.init.gradle
+
 # 系统杂项
 .DS_Store
 Thumbs.db

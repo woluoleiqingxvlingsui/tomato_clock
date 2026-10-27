@@ -19,11 +19,34 @@ $ToolsRoot = Join-Path $env:USERPROFILE 'tools'
 $JdkDir = Join-Path $ToolsRoot 'jdk-21'
 $SdkDir = Join-Path $ToolsRoot 'android-sdk'
 $GradleDir = Join-Path $ToolsRoot 'gradle-8.11.1'
-$InitGradle = Join-Path $env:USERPROFILE '.gradle\init.gradle'
+$MirrorInit = Join-Path $AndroidDir 'mirrors.init.gradle'
 $OutDir = Join-Path $RepoRoot '_out\apk'
+
+# 工具目录先建出来：以前 Node 那一步是"先下载再创建目录"，
+# 全新机器上 tools\ 还不存在时 curl 直接失败（目标目录不存在），一步都走不下去。
+New-Item -ItemType Directory -Force -Path $ToolsRoot | Out-Null
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Warn2($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
+# Java .properties 的值转义：逐字符处理，顺序不能错。
+#   反斜杠 -> \\   冒号 -> \:   非 ASCII 字符 -> \uXXXX
+# 为什么非 ASCII 要转成 \uXXXX：.properties 文件按 ISO-8859-1 读，
+# 直接写 UTF-8 的中文路径会被读成乱码，Gradle 就找不到 SDK 了。
+# 转成 \uXXXX 之后文件里全是 ASCII，两种读取方式都正确。
+# 例：C:\Users\张三\AppData\Local\Android\Sdk
+#     -> C\:\\Users\\u5f20\\u4e09\\AppData\\Local\\Android\\Sdk
+function ConvertTo-PropertiesValue([string]$Value) {
+  if ($null -eq $Value) { return '' }
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($ch in $Value.ToCharArray()) {
+    $code = [int][char]$ch
+    if ($ch -eq '\') { $null = $sb.Append('\\') }
+    elseif ($ch -eq ':') { $null = $sb.Append('\:') }
+    elseif ($code -gt 127) { $null = $sb.Append(('\u{0:x4}' -f $code)) }
+    else { $null = $sb.Append($ch) }
+  }
+  return $sb.ToString()
+}
 function Get-File($url, $dest) {
   Write-Host "  download $url"
   curl.exe -L --retry 3 --connect-timeout 30 -o $dest $url
@@ -37,6 +60,38 @@ function Get-FileOrNull($url, $dest, $minBytes) {
     Write-Warn2 "too small, treat as fail: $url"
   } catch { Write-Warn2 "mirror fail: $url" }
   return $false
+}
+
+# ---------------------------------------------------------------- version consistency
+# package.json 的 version 决定 APK 文件名，build.gradle 的 versionName/versionCode 决定
+# 手机上显示的版本。三处不一致会打出「文件名 1.4.0、装上却显示 1.3.0」的包，这里提前拦住。
+$verPkg = Join-Path $AppRoot 'package.json'
+$verLock = Join-Path $AppRoot 'package-lock.json'
+$verGradle = Join-Path $AndroidDir 'app\build.gradle'
+if ((Test-Path $verPkg) -and (Test-Path $verGradle)) {
+  $pkgVersion = (Get-Content $verPkg -Raw -Encoding UTF8 | ConvertFrom-Json).version
+  $gradleText = Get-Content $verGradle -Raw -Encoding UTF8
+  $nameMatch = [regex]::Match($gradleText, 'versionName\s+"([^"]+)"')
+  $codeMatch = [regex]::Match($gradleText, 'versionCode\s+(\d+)')
+  if (-not $nameMatch.Success -or -not $codeMatch.Success) {
+    throw 'app\android\app\build.gradle 里找不到 versionName / versionCode，无法校验版本号'
+  }
+  $gradleVersion = $nameMatch.Groups[1].Value
+  if ($gradleVersion -ne $pkgVersion) {
+    throw "版本号不一致：app\package.json = $pkgVersion，build.gradle versionName = $gradleVersion。改一致后再打包。"
+  }
+  # lockfile 里的项目版本也要跟上，否则 npm ci 之后元信息又对不上
+  if (Test-Path $verLock) {
+    $lockText = Get-Content $verLock -Raw -Encoding UTF8
+    $lockVersion = $null
+    if ($lockText -match '(?s)^\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*"([^"]+)"') { $lockVersion = $Matches[1] }
+    if ($lockVersion -and $lockVersion -ne $pkgVersion) {
+      throw "版本号不一致：app\package.json = $pkgVersion，app\package-lock.json = $lockVersion。把 lockfile 里的项目版本同步后再打包。"
+    }
+  }
+  Write-Host "  version $pkgVersion (versionCode $($codeMatch.Groups[1].Value))"
+} else {
+  Write-Warn2 '跳过版本号校验（找不到 package.json 或 build.gradle）'
 }
 
 # ---------------------------------------------------------------- Node.js
@@ -141,10 +196,12 @@ if (Test-Path $gradleBin) {
 }
 
 # ---------------------------------------------------------------- mirrors + local.properties
-Write-Step 'Write Gradle mirrors init.gradle and local.properties'
-New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE '.gradle') | Out-Null
+Write-Step 'Write project Gradle mirror config and local.properties'
+# 镜像配置写成【本项目专用】的 init 脚本，构建时用 --init-script 显式加载，只对这一次构建生效。
+# 以前是写 %USERPROFILE%\.gradle\init.gradle —— 那是全局配置，对本机所有 Gradle 工程生效，
+# 覆盖它会顺手改掉别的项目的仓库设置。现在不再碰用户的全局配置。
 $init = @"
-// CN mirrors for Gradle deps
+// CN mirrors for Gradle deps —— 仅用于本项目这一次构建（--init-script 显式加载）
 allprojects {
   buildscript {
     repositories {
@@ -160,20 +217,14 @@ allprojects {
   }
 }
 "@
-# init.gradle 是【全局生效】的：改它会连带影响本机所有 Gradle 工程
-# （拾穗集，以及以后装的第三个项目）。所以内容不一致时先备份，绝不静默冲掉别人的配置。
-if (Test-Path $InitGradle) {
-  $cur = ([IO.File]::ReadAllText($InitGradle) -replace "`r`n", "`n").Trim()
-  if ($cur -ne $init.Trim()) {
-    $bak = "$InitGradle.bak"
-    if (Test-Path $bak) { $bak = "$InitGradle.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss') }
-    Copy-Item $InitGradle $bak
-    Write-Warn2 "已有的 $InitGradle 内容不同，已备份为 $(Split-Path -Leaf $bak) 后再覆盖"
-  }
-}
-[IO.File]::WriteAllText($InitGradle, $init, [Text.UTF8Encoding]::new($false))
-$sdkProp = $SdkDir.Replace('\', '\\')
+[IO.File]::WriteAllText($MirrorInit, $init, [Text.UTF8Encoding]::new($false))
+Write-Host "  $MirrorInit"
+
+# local.properties 是 Java .properties 格式：反斜杠和冒号必须转义，
+# 否则 Gradle 读出来是一串乱码（路径里有空格或中文时必炸）。
+$sdkProp = ConvertTo-PropertiesValue $SdkDir
 [IO.File]::WriteAllText((Join-Path $AndroidDir 'local.properties'), "sdk.dir=$sdkProp`n", [Text.UTF8Encoding]::new($false))
+Write-Host "  sdk.dir=$sdkProp"
 
 # ---------------------------------------------------------------- release keystore
 if ($Release) {
@@ -261,7 +312,8 @@ try {
 
 Push-Location $AndroidDir
 try {
-  & $gradleBin $gradleTask --no-daemon
+  # --init-script 只对这一次构建生效，不会改用户全局的 Gradle 配置
+  & $gradleBin $gradleTask --no-daemon --init-script $MirrorInit
   if ($LASTEXITCODE -ne 0) { throw "$gradleTask failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
