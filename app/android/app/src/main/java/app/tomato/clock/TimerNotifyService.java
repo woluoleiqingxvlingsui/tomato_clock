@@ -70,6 +70,9 @@ public class TimerNotifyService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // 先恢复上次状态，再由 intent 里有效的 extras 覆盖。
+        // 这样 ACTION_SYNC 打到刚被系统回收重建的服务上时，不会把开始时间当成「现在」。
+        restoreState();
         if (intent != null) {
             // extras「有效才覆盖」：某字段解析失败/缺失时保持原值，绝不把计时归零
             String task = intent.getStringExtra(EXTRA_TASK);
@@ -89,16 +92,19 @@ public class TimerNotifyService extends Service {
                 pausedAt = pAt;
             }
             if (startTs <= 0) {
-                startTs = System.currentTimeMillis(); // 首次 START 兜底
+                // 只有首次 START 才允许「从现在开始」；SYNC 打到空服务上说明计时早已结束，直接退场
+                if (ACTION_START.equals(intent.getAction())) {
+                    startTs = System.currentTimeMillis();
+                } else {
+                    stopSelf();
+                    return START_NOT_STICKY;
+                }
             }
             persistState();
-        } else {
-            // START_STICKY 被系统重建：从偏好恢复；没有有效会话就退场
-            restoreState();
-            if (startTs <= 0) {
-                stopSelf();
-                return START_NOT_STICKY;
-            }
+        } else if (startTs <= 0) {
+            // START_STICKY 被系统重建：偏好里也没有有效会话就退场
+            stopSelf();
+            return START_NOT_STICKY;
         }
 
         if (!startAsForeground()) {
@@ -132,7 +138,8 @@ public class TimerNotifyService extends Service {
 
     private boolean startAsForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) {
+        // NotificationChannel 是 API 26 才有的类；minSdk 23，低版本直接跳过（旧系统没有渠道概念）
+        if (nm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.timer_channel_name),
@@ -233,6 +240,11 @@ public class TimerNotifyService extends Service {
             .putLong("pausedAccum", pausedAccum)
             .putLong("pausedAt", pausedAt)
             .apply();
+    }
+
+    /** 用户主动结束后清掉恢复用的状态，避免进程重建时复活一条已经结束的计时 */
+    public static void clearSavedState(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
     }
 
     private void restoreState() {

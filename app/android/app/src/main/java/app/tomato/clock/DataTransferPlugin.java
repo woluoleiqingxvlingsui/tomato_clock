@@ -79,7 +79,8 @@ public class DataTransferPlugin extends Plugin {
             call.resolve(ret);
             return;
         }
-        try (OutputStream os = getContext().getContentResolver().openOutputStream(uri)) {
+        // "wt" 明确截断：默认 "w" 在部分 provider 上不保证截断，覆盖更长的旧文件会留下尾巴
+        try (OutputStream os = getContext().getContentResolver().openOutputStream(uri, "wt")) {
             if (os == null) {
                 JSObject ret = new JSObject();
                 ret.put("ok", false);

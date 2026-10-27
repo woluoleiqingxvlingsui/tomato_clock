@@ -35,6 +35,16 @@ $KsProps = Join-Path $AndroidDir 'keystore.properties'
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Warn2($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 
+# 防手滑：这个脚本会把签名密钥副本上传到 GitHub，而自动发布当前是关闭的。
+Write-Host ''
+Write-Host '⚠ 本脚本会把签名密钥上传到 GitHub Actions secrets。' -ForegroundColor Yellow
+Write-Host '  自动发布流水线当前是关闭的，跑它没有任何好处。' -ForegroundColor Yellow
+$answer = Read-Host '确实要继续吗？输入 UPLOAD 确认'
+if ($answer -ne 'UPLOAD') {
+  Write-Host '已取消，没有上传任何内容。'
+  return
+}
+
 Write-Step '检查本地签名文件'
 if (-not (Test-Path $KsFile)) {
   throw "找不到 $KsFile；先跑一次 build-apk.ps1 -Release 生成签名"

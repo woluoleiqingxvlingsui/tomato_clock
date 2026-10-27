@@ -67,10 +67,16 @@ if ($Apk) {
 } else {
   $cands = @()
   $outDir = Join-Path $RepoRoot '_out\apk'
-  if (Test-Path $outDir) { $cands += @(Get-ChildItem $outDir -Filter '*.apk' -ErrorAction SilentlyContinue) }
+  if (Test-Path $outDir) {
+    $cands += @(Get-ChildItem $outDir -Filter '*.apk' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -notmatch 'unsigned' })
+  }
   $gradleOut = Join-Path $AppRoot 'android\app\build\outputs\apk'
-  if (Test-Path $gradleOut) { $cands += @(Get-ChildItem $gradleOut -Filter '*.apk' -Recurse -ErrorAction SilentlyContinue) }
-  if (-not $cands.Count) { throw '没有找到 APK，先跑 build-apk.ps1。' }
+  if (Test-Path $gradleOut) {
+    $cands += @(Get-ChildItem $gradleOut -Filter '*.apk' -Recurse -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -notmatch 'unsigned' })
+  }
+  if (-not $cands.Count) { throw '没有找到已签名的 APK（未签名包不能装），先跑 build-apk.ps1。' }
   $apkPath = ($cands | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
 Write-Host "  $apkPath  ($([math]::Round((Get-Item $apkPath).Length / 1MB, 2)) MB)"
@@ -93,8 +99,9 @@ if ($code -eq 0 -and $out -match 'Success') {
 } else {
   Write-Host $out -ForegroundColor Red
   if ($out -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
-    Write-Warn2 '签名不一致：debug 与 release 包不能互相覆盖。'
-    Write-Warn2 "解法一：$apkPath 若是 release，改用 debug 包；若是 debug，装一次 release 后卸载重装（会丢记录）。"
+    Write-Warn2 '签名不一致：手机里已装的是另一种包型（debug / release），系统拒绝覆盖。'
+    Write-Warn2 '解法：先在 App 统计页「备份与恢复 → 导出数据」，再卸载手机上的「番茄钟」，'
+    Write-Warn2 '      然后重跑本脚本安装当前包；装好后用「导入数据」把记录恢复回来。'
   }
   throw 'adb install 失败'
 }
