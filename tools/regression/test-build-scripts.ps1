@@ -7,6 +7,7 @@
 #   3. "没有合格 Node、tools 目录也不存在" 的场景：目录必须先建再下载
 #   4. 脚本不再写用户全局的 %USERPROFILE%\.gradle\init.gradle
 #   5. package.json / package-lock.json / build.gradle 三处版本号一致
+#   6. 大件下载都有国内镜像回退、npm 有 registry 兜底且不改用户全局配置
 # 只读检查，不下载、不打包、不动用户全局配置。
 
 $ErrorActionPreference = 'Stop'
@@ -212,6 +213,54 @@ if ($pkg.version -eq $lockVersion -and $pkg.version -eq $nameMatch.Groups[1].Val
   Ok "package.json / package-lock.json / build.gradle 版本一致：$($pkg.version)（versionCode $($codeMatch.Groups[1].Value)）"
 } else {
   Bad '版本号不一致' "package.json=$($pkg.version) package-lock=$lockVersion versionName=$($nameMatch.Groups[1].Value)"
+}
+
+# ---------------------------------------------------------------- 6. 国内镜像回退
+Section '6. 大件下载都有国内镜像回退（不靠单一源）'
+# 背景：JDK 与 cmdline-tools 原来各只有一个源（JDK 走 api.adoptium.net，
+# 实际会 302 到 GitHub 的 release 资产；cmdline-tools 走 dl.google.com）——
+# 这两个地址在国内经常连不上，一失败整个构建就停在第一步。
+# 现在每个大件都有「国内镜像优先 + 官方兜底」的候选列表。
+function Get-CandidateUrls([string]$varName) {
+  $m = [regex]::Match($buildSrc, "(?ms)\`$$varName\s*=\s*@\((.*?)\)")
+  if (-not $m.Success) { return $null }
+  return [regex]::Matches($m.Groups[1].Value, 'https?://[^''"\s]+') | ForEach-Object { $_.Value }
+}
+$sourceSpecs = @(
+  @{ name = 'JDK 21';        var = 'jdkSources';  min = 2 },
+  @{ name = 'cmdline-tools'; var = 'cmdSources';  min = 2 }
+)
+foreach ($spec in $sourceSpecs) {
+  $urls = Get-CandidateUrls $spec.var
+  if (-not $urls) {
+    Bad "$($spec.name) 找不到候选源列表（变量 `$($spec.var)）" ''
+  } elseif ($urls.Count -ge $spec.min) {
+    $cn = @($urls | Where-Object { $_ -match 'huaweicloud|tencent|npmmirror|tuna|ustc|aliyun' }).Count
+    Ok "  $($spec.name) 有 $($urls.Count) 个候选源（其中 $cn 个国内镜像）"
+  } else {
+    Bad "$($spec.name) 的候选源少于 $($spec.min) 个" ($urls -join ', ')
+  }
+}
+# npm 必须有 registry 回退，而且不能偷偷改用户的全局配置。
+# 只看真正的代码：先把整行注释和行尾注释去掉 —— 否则「不往仓库里塞 .npmrc」
+# 这种说明文字会被当成违规，结论是假的（跟第 4 组同一个道理）。
+$buildCode = ($buildSrc -split "`r?`n" | ForEach-Object { ($_ -replace '#.*$', '') }) -join "`n"
+if ($buildCode -match 'registry\.npmmirror\.com') { Ok 'npm 安装有国内 registry 兜底（npmmirror）' }
+else { Bad 'npm 安装没有 registry 兜底' '' }
+if ($buildCode -match '--registry=') { Ok 'npm 用 --registry 参数临时指定 registry' }
+else { Bad 'npm 没有用 --registry 参数指定 registry' }
+if ($buildCode -match 'npm\s+config\s+set' -or $buildCode -match '\.npmrc') {
+  Bad '脚本会改 npm 配置' '应当只用 --registry 参数，不碰用户全局 ~/.npmrc，也不往仓库塞 .npmrc'
+} else {
+  Ok '脚本不改 npm 配置（不写 ~/.npmrc、不塞仓库内的 .npmrc）'
+}
+# 大件下载必须用 Get-FileOrNull（带体积下限），避免把镜像的 HTML 错误页当包解压
+foreach ($varName in @('jdkSources', 'cmdSources')) {
+  $m = [regex]::Match($buildCode, "(?ms)\`$$varName\s*=\s*@\((.*?)\n\s*\)")
+  if (-not $m.Success) { continue }
+  $after = $buildCode.Substring($m.Index + $m.Length, [Math]::Min(600, $buildCode.Length - $m.Index - $m.Length))
+  if ($after -match 'Get-FileOrNull') { Ok "$varName 的下载走了 Get-FileOrNull（有体积下限，能挡住 HTML 错误页）" }
+  else { Bad "$varName 的下载没有体积下限校验" '' }
 }
 
 Write-Host ""

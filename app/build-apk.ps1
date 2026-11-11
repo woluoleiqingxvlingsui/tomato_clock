@@ -144,10 +144,23 @@ if (Test-Path (Join-Path $JdkDir 'bin\java.exe')) {
 } else {
   New-Item -ItemType Directory -Force -Path $ToolsRoot | Out-Null
   $zip = Join-Path $ToolsRoot 'temurin21.zip'
-  Get-File 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse' $zip
+  # 国内优先、官方兜底。原来的单源（api.adoptium.net）实际会 302 到 GitHub 的
+  # release 资产，国内经常连不上或者慢到超时 —— 一失败整个构建就停在第一步。
+  # 三个源都实测过可达；体积下限 150MB 是为了把「镜像返回 HTML 错误页」挡在外面。
+  $jdkSources = @(
+    'https://mirrors.huaweicloud.com/openjdk/21/openjdk-21_windows-x64_bin.zip',
+    'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse',
+    'https://mirrors.huaweicloud.com/openjdk/21.0.2/openjdk-21.0.2_windows-x64_bin.zip'
+  )
+  $gotJdk = $false
+  foreach ($u in $jdkSources) {
+    if (Get-FileOrNull $u $zip 150MB) { $gotJdk = $true; break }
+  }
+  if (-not $gotJdk) { throw 'all JDK mirrors failed' }
   $tmp = Join-Path $ToolsRoot 'jdk-extract'
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   $dir = Get-ChildItem $tmp -Directory | Where-Object { $_.Name -like 'jdk*' } | Select-Object -First 1
+  if (-not $dir) { throw "unexpected JDK zip layout: $zip" }
   if (Test-Path $JdkDir) { Remove-Item $JdkDir -Recurse -Force }
   Move-Item $dir.FullName $JdkDir
   Remove-Item $tmp -Recurse -Force
@@ -161,7 +174,16 @@ $sdkm = Join-Path $SdkDir 'cmdline-tools\latest\bin\sdkmanager.bat'
 if (-not (Test-Path $sdkm)) {
   New-Item -ItemType Directory -Force -Path $ToolsRoot | Out-Null
   $zip = Join-Path $ToolsRoot 'cmdline-tools.zip'
-  Get-File 'https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip' $zip
+  # 同理：dl.google.com 国内经常连不上，先试腾讯的 AndroidSDK 镜像，再回落官方。
+  $cmdSources = @(
+    'https://mirrors.cloud.tencent.com/AndroidSDK/commandlinetools-win-11076708_latest.zip',
+    'https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip'
+  )
+  $gotCmd = $false
+  foreach ($u in $cmdSources) {
+    if (Get-FileOrNull $u $zip 100MB) { $gotCmd = $true; break }
+  }
+  if (-not $gotCmd) { throw 'all cmdline-tools mirrors failed' }
   $tmp = Join-Path $SdkDir 'cmdline-tools-temp'
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   New-Item -ItemType Directory -Force -Path (Join-Path $SdkDir 'cmdline-tools') | Out-Null
@@ -286,16 +308,30 @@ if (Test-Path $stamp) {
 if ($needDeps) {
   Push-Location $AppRoot
   try {
-    if (Test-Path $pkgLock) {
-      npm ci
-      if ($LASTEXITCODE -ne 0) {
-        Write-Warn2 'npm ci 失败，回退 npm install（lockfile 可能与 package.json 不同步）'
-        npm install
+    # registry 也要兜底：脚本原来完全依赖用户全局的 ~/.npmrc。
+    # 全新机器上没有这个文件时，npm 会直连 registry.npmjs.org（慢 / 超时）。
+    # 这里用 --registry 显式指定，【不改】用户的全局 npm 配置，也不往仓库里塞 .npmrc。
+    # 先试国内镜像，再回落官方源；两个都试过还不行才退到 npm install。
+    $registries = @('https://registry.npmmirror.com', '')
+    $installed = $false
+    foreach ($reg in $registries) {
+      $regArgs = @('--no-audit', '--no-fund', '--fetch-retries=3', '--fetch-timeout=120000')
+      $regLabel = '官方源'
+      if ($reg) { $regArgs += "--registry=$reg"; $regLabel = $reg }
+      if (Test-Path $pkgLock) {
+        npm ci @regArgs
+        if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+        Write-Warn2 "npm ci 失败（registry=$regLabel）"
+      } else {
+        npm install @regArgs
+        if ($LASTEXITCODE -eq 0) { $installed = $true; break }
       }
-    } else {
-      npm install
     }
-    if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+    if (-not $installed) {
+      Write-Warn2 'npm ci 全部失败，回退 npm install（lockfile 可能与 package.json 不同步）'
+      npm install --no-audit --no-fund --fetch-retries=3 --fetch-timeout=120000
+      if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+    }
   } finally { Pop-Location }
   New-Item -ItemType Directory -Force -Path (Join-Path $AppRoot 'node_modules') | Out-Null
   [IO.File]::WriteAllText($stamp, "$hash`n", [Text.UTF8Encoding]::new($false))
