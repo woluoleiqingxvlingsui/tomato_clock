@@ -15,6 +15,8 @@
  *   C. 跨日编辑：超范围拒绝（字段全不变）、按占比分配（时间与日期不变）、取整边界、24 小时上限
  *   D. 导入校验：非法日期 / 越界时间戳 / 非法区间被跳过，合法记录照常合并
  *   E. 同源多页面：交错新增不丢、删除不被复活、编辑冲突有提示、进行中会话不被覆盖
+ *   I. 事项配色：色板自身感知距离下界 / 相近事项感知距离够大 / 白字可读 /
+ *      筛选·刷新·追加后颜色稳定 / 存坏了不崩
  */
 'use strict';
 const fs = require('fs');
@@ -849,6 +851,229 @@ async function run() {
       (await A.eval('return localStorage.getItem("tomato.migratedV2")')) !== null);
     check('重试没有覆盖或删除已有的新记录：旧数据仍在',
       (await A.eval('return (JSON.parse(localStorage.getItem("tomato.records")||"[]")).length')) === 1);
+
+    /* ---------------- I. 事项配色 ---------------- */
+    section('I. 事项配色：协调色板 + 稳定映射');
+    // 先把其它页面关掉：它们各自记着一份配色映射，
+    // 留着会写回盘上，影响这一段「从零开始分配」的验证
+    try { await B.close(); } catch (e) {}
+    try { await H1.close(); } catch (e) {}
+    try { await H2.close(); } catch (e) {}
+    // 合成数据：用户反馈里那几个「看起来很像」的事项，外加一个还没历史的进行中事项
+    await A.eval(`
+      localStorage.clear();
+      localStorage.setItem('tomato.migratedV2','true');
+      const p=x=>x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+      const now=Date.now();
+      const names=['杂项','英语听力','科研','背单词'];
+      const list=names.map((n,i)=>({id:'col'+i,taskName:n,startTs:now-i*60000,
+        endTs:now-i*60000+1500000,durationMs:1500000,date:p(new Date(now-i*60000))}));
+      localStorage.setItem('tomato.sessions',JSON.stringify(list));
+      localStorage.setItem('tomato.recentTasks',JSON.stringify(names));
+      localStorage.setItem('tomato.ongoing',JSON.stringify({taskName:'正在进行的写作',startTs:now,
+        pausedAccumMs:0,pausedAt:null,sessionId:'col-ongoing'}));
+      return true;
+    `);
+    await A.reload();
+    const colorInfo = await A.eval(`
+      const T=window.TomatoInternals;
+      const names=['杂项','英语听力','科研','背单词','正在进行的写作'];
+      const cols={};
+      for(const n of names) cols[n]=T.colorFor(n);
+      let min=Infinity,pair='';
+      for(let i=0;i<names.length;i++) for(let j=i+1;j<names.length;j++){
+        const dd=T.colorLabDistance(cols[names[i]],cols[names[j]]);
+        if(dd<min){min=dd;pair=names[i]+'/'+names[j]}
+      }
+      const vals=Object.values(cols);
+      return JSON.stringify({
+        cols, min, pair,
+        uniq:new Set(vals).size, n:names.length,
+        allHex:vals.every(c=>/^#[0-9a-f]{6}$/.test(c)),
+        badPalette:T.colorPalette.filter(c=>T.colorContrastWhite(c)<4.5),
+        mapSize:T.colorMapSnapshot().length
+      });
+    `);
+    const CI = JSON.parse(colorInfo);
+    const colorNames = ['杂项', '英语听力', '科研', '背单词', '正在进行的写作'];
+    check('相近的事项拿到了互不相同的颜色', CI.uniq === CI.n, colorInfo);
+    check('相近事项两两的感知距离够大（OKLab >= 0.08）', CI.min >= 0.08,
+      '最小 ' + CI.min.toFixed(4) + ' (' + CI.pair + ')');
+    check('所有事项色都是合法的 hex', CI.allHex === true, colorInfo);
+    check('色板里每个颜色压白字都 >= 4.5:1', CI.badPalette.length === 0, JSON.stringify(CI.badPalette));
+    check('进行中但还没有历史的事项也分到了颜色', !!CI.cols['正在进行的写作'], colorInfo);
+
+    /* 色板自身的下界 —— 这一组是「两个事项撞成同一个颜色」的真正防线。
+       上一版色板 14 个颜色挤在 L 0.55~0.59 的窄带里，靠色相区分，
+       「钢蓝 #118197 vs 湖蓝 #3b8185」只有 0.0336 的感知距离，肉眼分不开。
+       而当时的回归只用了 5 个事项名（最小 0.1007）刚好过了 0.08 的门槛，
+       所以那道防线根本没被测到 —— 事项一多必然撞色。
+       现在直接量色板本身：pickColors 只会从色板里挑，
+       所以色板内部两两距离的下界 = 任何一次分配能拿到的最小距离下界。
+       纯计算，不分配颜色、不写盘、不影响后面那些用例。 */
+    const paletteCheck = await A.eval(`
+      const T=window.TomatoInternals;
+      const P=T.colorPalette;
+      let min=Infinity,pair='';
+      for(let i=0;i<P.length;i++) for(let j=i+1;j<P.length;j++){
+        const d=T.colorLabDistance(P[i],P[j]);
+        if(d<min){min=d;pair=P[i]+'/'+P[j]}
+      }
+      const badContrast=P.filter(c=>T.colorContrastWhite(c)<4.6);
+      const badHex=P.filter(c=>!/^#[0-9a-f]{6}$/.test(c));
+      const contrasts=P.map(c=>T.colorContrastWhite(c));
+      return JSON.stringify({n:P.length,min,pair,badContrast,badHex,
+        uniq:new Set(P).size,
+        minContrast:Math.min.apply(null,contrasts),
+        maxContrast:Math.max.apply(null,contrasts)});
+    `);
+    const PC = JSON.parse(paletteCheck);
+    check('色板是 14 个互不重复的合法 hex', PC.n === 14 && PC.uniq === 14 && PC.badHex.length === 0, paletteCheck);
+    check('色板两两的感知距离有下界（>= 0.08，不会撞色）', PC.min >= 0.08,
+      '最小 ' + PC.min.toFixed(4) + ' (' + PC.pair + ')');
+    check('色板每个颜色压白字 >= 4.6:1', PC.badContrast.length === 0, JSON.stringify(PC.badContrast));
+
+    // 颜色映射落盘（写盘是防抖的，等一下）
+    await sleep(700);
+    const persisted = await A.eval(`
+      const raw=localStorage.getItem('tomato.taskColors');
+      if(!raw) return JSON.stringify({ok:false});
+      const o=JSON.parse(raw);
+      return JSON.stringify({ok:o.v===1&&Array.isArray(o.pairs), n:o.pairs.length,
+        names:o.pairs.map(p=>p[0])});
+    `);
+    const PS = JSON.parse(persisted);
+    check('颜色映射已落盘（版本化存储）', PS.ok === true && PS.n >= 5, persisted);
+    check('落盘的内容覆盖了历史 + 快捷事项 + 进行中的事项',
+      ['杂项', '英语听力', '科研', '背单词', '正在进行的写作'].every(n => PS.names.includes(n)),
+      JSON.stringify(PS.names));
+
+    // 统一入口：图例圆点 / 记录圆点 / 快捷事项圆点，都必须等于 colorFor(name)
+    await A.eval('switchTab("stats"); renderRecentChips(); return true');
+    await sleep(500);
+    const domCheck = await A.eval(`
+      const T=window.TomatoInternals;
+      // 浏览器会把 #rrggbb 归一化成 rgb(...)，两边都归一化再比
+      const norm=c=>{const d=document.createElement('div');d.style.color=c;document.body.appendChild(d);
+        const v=getComputedStyle(d).color;d.remove();return v};
+      const out={rec:[],legend:[],chip:[]};
+      document.querySelectorAll('#rec-list .rec-dot').forEach(d=>{
+        const nm=d.closest('li').querySelector('.rec-name').textContent;
+        out.rec.push({nm,dom:norm(d.style.background),fn:norm(T.colorFor(nm))});
+      });
+      document.querySelectorAll('#pie-legend .dot').forEach(d=>{
+        const nm=d.parentElement.querySelector('.nm').textContent;
+        if(d.style.background==='#cdc6c5') return;      // 饼图里的「其他」是灰色，不参与
+        out.legend.push({nm,dom:norm(d.style.background),fn:norm(T.colorFor(nm))});
+      });
+      document.querySelectorAll('#recent-chips .chip-dot').forEach(d=>{
+        const nm=d.parentElement.textContent.trim();
+        out.chip.push({nm,dom:norm(d.style.background),fn:norm(T.colorFor(nm))});
+      });
+      return JSON.stringify(out);
+    `);
+    const DC = JSON.parse(domCheck);
+    const same = list => list.length > 0 && list.every(x => x.dom === x.fn);
+    check('记录列表圆点 = colorFor(事项名)', same(DC.rec), domCheck);
+    check('饼图图例圆点 = colorFor(事项名)', same(DC.legend), domCheck);
+    check('快捷事项圆点 = colorFor(事项名)', same(DC.chip), domCheck);
+
+    // 稳定性：切换日/月/年筛选、刷新、追加新事项，老颜色都不能变
+    const colorsBefore = JSON.stringify(colorNames.map(n => CI.cols[n]));
+    await A.eval(`document.querySelectorAll('#seg-pie button').forEach(b=>b.click()); return true`);
+    await sleep(500);
+    const afterFilter = await A.eval(`
+      const T=window.TomatoInternals;
+      return JSON.stringify(['杂项','英语听力','科研','背单词','正在进行的写作'].map(n=>T.colorFor(n)));
+    `);
+    check('切换日/月/年筛选后颜色不变', afterFilter === colorsBefore, afterFilter);
+    await A.reload();
+    await sleep(600);
+    const afterColorReload = await A.eval(`
+      const T=window.TomatoInternals;
+      return JSON.stringify(['杂项','英语听力','科研','背单词','正在进行的写作'].map(n=>T.colorFor(n)));
+    `);
+    check('刷新页面后颜色不变', afterColorReload === colorsBefore, afterColorReload);
+    // 追加一个新事项
+    await A.eval(`
+      const list=JSON.parse(localStorage.getItem('tomato.sessions')||'[]');
+      const now=Date.now();
+      const d=new Date();
+      const p=x=>x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+      list.push({id:'col-new',taskName:'新增事项',startTs:now,endTs:now+60000,durationMs:60000,date:p(d)});
+      localStorage.setItem('tomato.sessions',JSON.stringify(list));
+      return true;
+    `);
+    await A.reload();
+    await sleep(600);
+    const afterAdd = await A.eval(`
+      const T=window.TomatoInternals;
+      const names=['杂项','英语听力','科研','背单词','正在进行的写作'];
+      return JSON.stringify({old:names.map(n=>T.colorFor(n)),nw:T.colorFor('新增事项')});
+    `);
+    const AA = JSON.parse(afterAdd);
+    check('追加新事项后老事项颜色不变', JSON.stringify(AA.old) === colorsBefore, afterAdd);
+    check('新事项拿到的是另一个颜色', AA.nw !== AA.old[0], afterAdd);
+
+    // 超过色板容量时的扩展：颜色必须互不重复（不保证都能一眼分开，但绝不撞色）
+    const extRes = await A.eval(`
+      const T=window.TomatoInternals;
+      const cols=[];
+      for(let i=0;i<20;i++) cols.push(T.colorFor('扩展事项'+i));
+      const all=T.colorMapSnapshot().map(p=>p[1]);
+      return JSON.stringify({uniq:new Set(all).size,total:all.length,
+        hex:cols.every(c=>/^#[0-9a-f]{6}$/.test(c)),
+        white:cols.every(c=>T.colorContrastWhite(c)>=4.5)});
+    `);
+    const EX = JSON.parse(extRes);
+    check('事项超过色板容量时，颜色仍然互不重复', EX.uniq === EX.total, extRes);
+    check('扩展出来的颜色也是合法 hex 且白字可读', EX.hex === true && EX.white === true, extRes);
+
+    // 模拟另一页面先落盘，并抢先占用了本页尚未保存的新事项颜色。
+    const concurrentBefore = await A.eval(`
+      const T=window.TomatoInternals;
+      const before=T.colorMapSnapshot();
+      const pending=T.colorFor('本页并发新增');
+      const disk=JSON.parse(localStorage.getItem('tomato.taskColors'));
+      disk.pairs.push(['另页并发新增',pending]);
+      localStorage.setItem('tomato.taskColors',JSON.stringify(disk));
+      flushColors();
+      return JSON.stringify({before,pending});
+    `);
+    await sleep(700);
+    const concurrentAfter = JSON.parse(await A.eval(`
+      return JSON.stringify(window.TomatoInternals.colorMapSnapshot());
+    `));
+    const CB = JSON.parse(concurrentBefore), CA = new Map(concurrentAfter);
+    check('并发新增不同事项时不会持久化相同颜色',
+      CA.get('本页并发新增') !== CA.get('另页并发新增'), JSON.stringify(concurrentAfter));
+    check('并发分配保留先落盘的颜色及原有事项颜色',
+      CA.get('另页并发新增') === CB.pending && CB.before.every(([n,c]) => CA.get(n) === c));
+
+    // 损坏的配色存储：不能崩，要能自己恢复
+    for (const bad of ['not json at all', 'null', '{"v":1,"pairs":"not-an-array"}',
+      '{"v":99,"pairs":[["杂项","#123456"]]}', '{"v":1,"pairs":[["__proto__","#4677c0"],["坏颜色","#zzz"]]}']) {
+      await A.eval(`localStorage.setItem('tomato.taskColors',${JSON.stringify(bad)}); return true`);
+      await A.reload();
+      await sleep(400);
+      const res = await A.eval(`
+        const T=window.TomatoInternals;
+        return JSON.stringify({c:T.colorFor('杂项'),proto:({}).polluted===undefined});
+      `);
+      const R = JSON.parse(res);
+      check('配色存储损坏时不崩（' + bad.slice(0, 22) + '…）',
+        /^#[0-9a-f]{6}$/.test(R.c) && R.proto === true, res);
+    }
+    // 特殊事项名：只是普通名字，不能污染原型
+    const protoRes = await A.eval(`
+      const T=window.TomatoInternals;
+      const a=T.colorFor('__proto__');
+      const b=T.colorFor('constructor');
+      return JSON.stringify({a,b,polluted:({}).polluted,keys:Object.keys({}).length});
+    `);
+    const PR = JSON.parse(protoRes);
+    check('特殊名字（__proto__ / constructor）能正常取色', /^#[0-9a-f]{6}$/.test(PR.a) && /^#[0-9a-f]{6}$/.test(PR.b), protoRes);
+    check('特殊名字没有污染原型', PR.polluted === undefined && PR.keys === 0, protoRes);
   } finally {
     try { browser.close(); } catch (e) {}
     try { proc.kill(); } catch (e) {}

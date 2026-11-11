@@ -585,36 +585,258 @@ function withLock(name,fn){
   return run;
 }
 
-/* ============ 配色：按事项名哈希取色，同一事项永远同色 ============
-   早期版本是在 12 个固定颜色里取模（PALETTE[h%12]）。槽位有限，
-   必然会出现「两个不同事项撞到同一个颜色」—— 科研和改代码就都落在
-   那个灰色上，饼图上两瓣一模一样，列表里的圆点也分不出谁是谁。
-   12 槽位放 6 个名字，撞色概率约 74%，不是偶发。
-   现在改成在连续色相上取色，哈希再带出一点饱和度/亮度差异：
-   同一名字永远同一色，不同名字几乎不可能同色。 */
-function hashName(str){
-  let h=0x811c9dc5;                       // FNV-1a：各位都混得开，比 h*31 稳
-  for(let i=0;i<str.length;i++){
-    h^=str.charCodeAt(i);
-    h=Math.imul(h,0x01000193)>>>0;
+/* ============ 事项配色：协调色板 + 持久化映射 ============
+   最早是「按事项名哈希取一个随机 HSL」：同一个名字永远同色，但两个名字
+   可能落到几乎一样的颜色上（用户反馈的「杂项 / 英语听力」「科研 / 背单词」
+   就是这样），统计图里两瓣饼、两个圆点根本分不开。
+   现在改成三件事：
+     ① 一套人工策划的协调色板（等色相 + 交错明度，蓝 / 琥珀 / 青绿 / 紫 / 橄榄 …），
+        每个颜色都验过「白字压上去看得清」：选中事项的 chip 就是白字压在
+        事项色块上，纯白对比度全部 >= 4.65:1（硬底线 4.5:1）。
+        两两之间的感知距离也有下界（实测最小 0.0935），不会两个事项撞成同一个颜色。
+     ② 用 OKLab 感知距离挑颜色，而不是「碰运气不撞 hex」：给一批事项
+        分配时，优先挑互相离得最远的那些。
+     ③ 颜色映射存在本机（tomato.taskColors）：同一件事永远同一个颜色；
+        日/月/年筛选、排序、刷新、换标签页打开，看到的颜色都一样；
+        之后新增的事项只在末尾追加，不会把老事项的颜色改掉。
+   边界：色板只有 14 个颜色，超过之后用确定性的方式扩展（保证不重复），
+   但不保证任意多事项都能一眼分开 —— 这是物理上限，不吹。
+   存坏了（被手改 / 旧版本残留）就当没有，从头分配；配色写盘失败也不影响计时。 */
+const COLOR_MAP_KEY="tomato.taskColors";
+const COLOR_MAP_VERSION=1;
+const COLOR_LOCK="tomato.lock.colors";
+/* 协调色板（白字对比度全部 >= 4.65:1；顺序即「挑不到更远颜色时的并列优先级」）
+   这一版是 v1.5.0 重排过的：上一版 14 个颜色挤在很窄的明度带里（L 0.55~0.59），
+   靠色相区分，结果「钢蓝 vs 湖蓝」只有 0.0336 的感知距离 —— 眼睛基本分不开，
+   饼图上两瓣看起来一模一样。
+   现在改成【等色相 + 交错明度】：
+     · 14 个色相在色轮上等距排开（覆盖整圈，不会全挤在紫红区）
+     · 明度在高/低两档之间交错：相邻色靠 ΔL 拉开，同档色靠 2 倍色相差拉开
+   实测两两最小感知距离 0.0935（上版 0.0336），回归测试的门槛是 0.08。 */
+const COLOR_PALETTE=[
+  "#b7474e", // 朱红   H20   L0.55
+  "#8d3600", // 赭红   H45   L0.45
+  "#9c6405", // 琥珀   H71   L0.55
+  "#655400", // 深橄榄 H97   L0.45
+  "#647d03", // 草绿   H122  L0.55
+  "#006826", // 松绿   H148  L0.45
+  "#00846b", // 青绿   H174  L0.55
+  "#066265", // 深青   H200  L0.45
+  "#007da0", // 湖蓝   H225  L0.55
+  "#00569a", // 深蓝   H251  L0.45
+  "#5e66c4", // 靛紫   H277  L0.55
+  "#643e92", // 深紫   H302  L0.45
+  "#9d4e9c", // 品红   H328  L0.55
+  "#8b2d5b"  // 紫红   H354  L0.45
+];
+const HEX_RE=/^#[0-9a-f]{6}$/;
+const colorMap=new Map();        // 事项名 -> 颜色（唯一的真相来源）
+const colorUsed=new Set();       // 已被占用的颜色
+let colorDirty=false,colorTimer=null;
+const labCache=new Map();
+function srgbToLin(c){return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}
+function linToSrgb(c){return c<=0.0031308?c*12.92:1.055*Math.pow(c,1/2.4)-0.055}
+function hexToOklab(hex){
+  let v=labCache.get(hex);
+  if(v)return v;
+  const h=hex.replace("#","");
+  const r=srgbToLin(parseInt(h.slice(0,2),16)/255),
+        g=srgbToLin(parseInt(h.slice(2,4),16)/255),
+        b=srgbToLin(parseInt(h.slice(4,6),16)/255);
+  const l=Math.cbrt(0.4122214708*r+0.5363325363*g+0.0514459929*b),
+        m=Math.cbrt(0.2119034982*r+0.6806995451*g+0.1073969566*b),
+        s=Math.cbrt(0.0883024619*r+0.2817188376*g+0.6299787005*b);
+  v=[0.2104542553*l+0.7936177850*m-0.0040720468*s,
+     1.9779984951*l-2.4285922050*m+0.4505937099*s,
+     0.0259040371*l+0.7827717662*m-0.8086757660*s];
+  labCache.set(hex,v);
+  return v;
+}
+function oklabDist(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2])}
+function contrastWithWhite(hex){
+  const h=hex.replace("#","");
+  const r=srgbToLin(parseInt(h.slice(0,2),16)/255),
+        g=srgbToLin(parseInt(h.slice(2,4),16)/255),
+        b=srgbToLin(parseInt(h.slice(4,6),16)/255);
+  const L=0.2126*r+0.7152*g+0.0722*b;
+  return 1.05/(L+0.05);
+}
+/* OKLCH -> #RRGGBB（色域外就一点点降彩度；只用于色板用完后的扩展色） */
+function oklabToRgb(L,a,b){
+  const l_=L+0.3963377774*a+0.2158037573*b,
+        m_=L-0.1055613458*a-0.0638541728*b,
+        s_=L-0.0894841775*a-1.2914855480*b;
+  const l=l_*l_*l_,m=m_*m_*m_,s=s_*s_*s_;
+  return [4.0767416621*l-3.3077115913*m+0.2309699292*s,
+          -1.2684380046*l+2.6097574011*m-0.3413193965*s,
+          -0.0041960863*l-0.7034186147*m+1.7076147010*s];
+}
+function oklchToHex(L,C,hDeg){
+  const h=hDeg*Math.PI/180;
+  let c=C,rgb=oklabToRgb(L,c*Math.cos(h),c*Math.sin(h));
+  while(c>0.001&&rgb.some(v=>v<-0.002||v>1.002)){c-=0.004;rgb=oklabToRgb(L,c*Math.cos(h),c*Math.sin(h))}
+  if(rgb.some(v=>v<-0.002||v>1.002))return null;
+  return "#"+rgb.map(v=>Math.round(Math.min(1,Math.max(0,linToSrgb(Math.min(1,Math.max(0,v)))))*255).toString(16).padStart(2,"0")).join("");
+}
+/* ---- 颜色映射的读写（版本化；存坏了就当没有，绝不抛异常） ---- */
+function readColorMap(){
+  const m=new Map();
+  const used=new Set();
+  let raw=null;
+  try{raw=store.get(COLOR_MAP_KEY,null)}catch(e){return m}
+  if(!raw||typeof raw!=="object"||Array.isArray(raw))return m;
+  if(raw.v!==COLOR_MAP_VERSION)return m;          // 版本不认识 -> 重新分配
+  const pairs=raw.pairs;
+  if(!Array.isArray(pairs))return m;
+  for(const p of pairs){
+    if(!Array.isArray(p)||p.length!==2)continue;
+    const k=p[0],v=p[1];
+    // 键值都必须是普通字符串；像 "__proto__" 这种名字只是普通事项名，
+    // 存在 pairs 里（数组），不会污染任何原型
+    if(typeof k!=="string"||!k||typeof v!=="string"||!HEX_RE.test(v))continue;
+    if(!m.has(k)&&!used.has(v)&&contrastWithWhite(v)>=4.5){m.set(k,v);used.add(v)}
   }
-  return h>>>0;
+  return m;
 }
+function writeColorMap(map){
+  try{return store.set(COLOR_MAP_KEY,{v:COLOR_MAP_VERSION,pairs:[...map.entries()]})}catch(e){return false}
+}
+/* ---- 挑颜色：尽量让互相之间的感知距离最大 ---- */
+/* 一批颜色内部的「最小两两距离」—— 这就是「能不能一眼分开」的量化指标 */
+function colorSetScore(sel,used){
+  let m=Infinity;
+  for(let i=0;i<sel.length;i++){
+    for(let j=i+1;j<sel.length;j++)m=Math.min(m,oklabDist(hexToOklab(sel[i]),hexToOklab(sel[j])));
+    for(const u of used)m=Math.min(m,oklabDist(hexToOklab(sel[i]),hexToOklab(u)));
+  }
+  return m;
+}
+function pickColors(count,used){
+  const pool=COLOR_PALETTE.filter(h=>!used.has(h));
+  const sel=[];
+  // ① 贪心：每次挑离「已用 + 已选」最远的一个；
+  //    一个都还没用时，拿「离其它颜色最远」的当锚点
+  for(let i=0;i<count;i++){
+    let best=null,bestScore=-1;
+    for(const hex of pool){
+      if(sel.indexOf(hex)>=0)continue;
+      const lab=hexToOklab(hex);
+      const ref=(used.size||sel.length)?[...used,...sel]:pool.filter(x=>x!==hex);
+      let m=Infinity;
+      for(const u of ref){const d=oklabDist(lab,hexToOklab(u));if(d<m)m=d}
+      if(m>bestScore){bestScore=m;best=hex}
+    }
+    if(!best)break;
+    sel.push(best);
+  }
+  // ② 局部优化：换掉其中一个颜色，让最小间距更大（贪心会被早先的选择带偏）
+  for(let guard=0;guard<40;guard++){
+    const cur=colorSetScore(sel,used);
+    let improved=false;
+    for(let i=0;i<sel.length&&!improved;i++){
+      for(const cand of pool){
+        if(sel.indexOf(cand)>=0)continue;
+        const trial=sel.slice();trial[i]=cand;
+        if(colorSetScore(trial,used)>cur+1e-9){sel[i]=cand;improved=true;break}
+      }
+    }
+    if(!improved)break;
+  }
+  return sel;
+}
+/* 色板用完后的确定性扩展：色相按黄金角推进，明度在色板明度带内交错，保证不与已用颜色重复 */
+function extendColor(seqBase,used=colorUsed){
+  for(let i=0;i<120;i++){
+    const n=seqBase+i;
+    const h=(n*137.508)%360;
+    for(const L of [0.55,0.50,0.45,0.52,0.47]){
+      const hex=oklchToHex(L,0.13,h);
+      if(!hex)continue;
+      if(used.has(hex))continue;
+      if(contrastWithWhite(hex)<4.5)continue;
+      return hex;
+    }
+  }
+  return "#627990";
+}
+/* ---- 对外唯一入口：所有图表 / 图例 / 记录 / 快捷事项都走它 ---- */
 function colorFor(name){
-  const h=hashName(String(name));
-  const hue=h%360;                        // 色相 0-359，均匀铺开
-  const sat=60+((h>>>9)%4)*6;             // 饱和度 60 / 66 / 72 / 78
-  const lig=50+((h>>>15)%4)*4;            // 亮度 50 / 54 / 58 / 62
-  return hslToHex(hue,sat,lig);
+  const key=(name===undefined||name===null||name==="")?"专注":String(name);
+  const hit=colorMap.get(key);
+  if(hit)return hit;
+  const chosen=pickColors(1,colorUsed)[0]||extendColor(colorMap.size);
+  colorMap.set(key,chosen);
+  colorUsed.add(chosen);
+  markColorDirty();
+  return chosen;
 }
-/* HSL → #RRGGBB。必须返回 hex：趋势图的半透明填充走 hexA()，那函数只认 hex。 */
-function hslToHex(h,s,l){
-  s/=100;l/=100;
-  const k=n=>(n+h/30)%12;
-  const a=s*Math.min(l,1-l);
-  const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
-  const t=v=>Math.round(255*v).toString(16).padStart(2,"0");
-  return "#"+t(f(0))+t(f(8))+t(f(4));
+function rebuildColorUsed(){
+  colorUsed.clear();
+  for(const v of colorMap.values())colorUsed.add(v);
+}
+function markColorDirty(){
+  colorDirty=true;
+  if(colorTimer)return;
+  colorTimer=setTimeout(()=>{colorTimer=null;flushColors()},250);
+}
+/* 写盘：锁内先合并盘上已有条目，别把别的页面写好的覆盖掉。
+   写盘失败只影响「颜色能不能跨会话记住」，不影响计时和统计。 */
+function flushColors(){
+  if(!colorDirty)return;
+  colorDirty=false;
+  const snapshot=new Map(colorMap);
+  try{
+    withLock(COLOR_LOCK,async()=>{
+      const disk=readColorMap();
+      const reserved=new Set(disk.values());
+      let changed=false;
+      for(const [k,v] of disk){if(!colorMap.has(k)){colorMap.set(k,v);changed=true}}
+      for(const [k,v] of snapshot){
+        if(disk.has(k)){
+          const d=disk.get(k);
+          if(d!==v){colorMap.set(k,d);changed=true}   // 别的页面先写：以盘上为准，两边一致
+        }else{
+          // 另一页面可能已把这个颜色分给不同事项；保留先落盘的分配，
+          // 只为本页尚未保存的新事项重新选色。
+          const chosen=reserved.has(v)?(pickColors(1,reserved)[0]||extendColor(disk.size,reserved)):v;
+          disk.set(k,chosen);reserved.add(chosen);
+          if(colorMap.get(k)!==chosen){colorMap.set(k,chosen);changed=true}
+        }
+      }
+      rebuildColorUsed();
+      writeColorMap(disk);
+      if(changed)refreshColorUI();
+    }).catch(()=>{});
+  }catch(e){}
+}
+function refreshColorUI(){
+  try{
+    if($("#page-stats").classList.contains("active"))renderStats();
+    renderRecentChips();
+    if(ongoing)$("#run-dot").style.background=colorFor(ongoing.taskName);
+  }catch(e){}
+}
+/* 启动时给「当前已知的事项」一次性分配颜色：
+   历史记录 + 快捷事项 + 正在进行的（哪怕它还没有任何历史）都算进去。
+   先按名字稳定排序再分配 —— 跟图表先画谁、后画谁完全无关。 */
+function initTaskColors(){
+  const disk=readColorMap();
+  colorMap.clear();colorUsed.clear();
+  for(const [k,v] of disk){colorMap.set(k,v);colorUsed.add(v)}
+  const names=new Set();
+  for(const s of sessions){const n=s&&s.taskName;if(typeof n==="string"&&n.trim())names.add(n)}
+  for(const n of recentTasks){if(typeof n==="string"&&n.trim())names.add(n)}
+  if(ongoing&&typeof ongoing.taskName==="string"&&ongoing.taskName.trim())names.add(ongoing.taskName);
+  const sorted=Array.from(names).sort((a,b)=>a<b?-1:(a>b?1:0));
+  const missing=sorted.filter(n=>!colorMap.has(n));
+  if(!missing.length)return;
+  const chosen=pickColors(missing.length,colorUsed);
+  for(let i=0;i<missing.length;i++){
+    const hex=chosen[i]||extendColor(colorMap.size+i);
+    colorMap.set(missing[i],hex);
+    colorUsed.add(hex);
+  }
+  markColorDirty();
 }
 
 /* ============ 日期工具 ============ */
@@ -642,6 +864,9 @@ let sessions=loadArray(KEY.sessions).filter(isSessionObj);
 let ongoing=store.get(KEY.ongoing,null);
 if(!ongoing||typeof ongoing!=="object")ongoing=null;
 let recentTasks=loadArray(KEY.recent).filter(n=>typeof n==="string"&&n.trim());
+/* 事项配色：读完数据就初始化一次（历史 + 快捷事项 + 正在进行的），
+   之后新增的事项只在末尾追加，不会改老事项的颜色。 */
+initTaskColors();
 let pieRange="day",trendGran="day",trendTask=null;
 let pieChart=null,lineChart=null,delTargetId=null,toastTimer=null;
 
@@ -1777,6 +2002,13 @@ window.addEventListener("storage",e=>{
   }else if(e.key===KEY.recent){
     recentTasks=readRecent();
     renderRecentChips();
+  }else if(e.key===COLOR_MAP_KEY){
+    // 别的页面给事项分了颜色：以盘上为准，同源各页面看到的颜色一致
+    const disk=readColorMap();
+    let changed=false;
+    for(const [k,v] of disk){if(colorMap.get(k)!==v){colorMap.set(k,v);changed=true}}
+    rebuildColorUsed();
+    if(changed)refreshColorUI();
   }else if(e.key===WRITER_KEY){
     // 别的页面动了写权限名单：立刻重新判断自己还是不是"能写的那个"
     if(!hasWebLocks){
@@ -1802,6 +2034,13 @@ window.TomatoInternals={
   MIN_RECORD_MS:MIN_RECORD_MS,
   MAX_EDIT_MS:MAX_EDIT_MS,
   hasWebLocks:hasWebLocks,
+  /* 配色相关的只读钩子：回归测试要直接验「同一事项永远同色」「不同事项
+     离得够远」「存坏了也不崩」，所以把纯函数和当前映射挂出来。 */
+  colorFor:colorFor,
+  colorPalette:COLOR_PALETTE.slice(),
+  colorMapSnapshot:()=>Array.from(colorMap.entries()),
+  colorLabDistance:(a,b)=>oklabDist(hexToOklab(a),hexToOklab(b)),
+  colorContrastWhite:contrastWithWhite,
   writerState:()=>{
     const st=leaseValidNow();
     return {role:writerRole,id:myWriterId,note:writerNote,
