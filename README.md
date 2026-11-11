@@ -1,8 +1,10 @@
-# 🍅 番茄钟（手机端 App）v1.4.0
+# 🍅 番茄钟（手机端 App）v1.5.0
 
 仿「番茄ToDo」思路打造的极简专注计时 App：只保留**正计时专注**一种模式，专注完直接记录，没有休息倒计时。基于 Capacitor 打包成安卓 APK 安装在手机上使用，也可以直接在电脑浏览器里打开预览。
 
 **全程离线、数据只存在自己手机上**：不声明联网权限、不声明存储/位置权限、不联网上报、不开系统云备份。除 `VIBRATE`（震动反馈）外，清单里只有通知栏计时卡必需的三项：`POST_NOTIFICATIONS`（Android 13+ 才弹，拒绝也不影响计时）、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_SPECIAL_USE` —— 都不涉及联网、存储或位置。
+
+**最低系统版本：Android 6.0（API 23）**；`targetSdk 35`。桌面浏览器预览需要任意现代浏览器（Chrome / Edge / Firefox / Safari）。
 
 ## 截图
 
@@ -23,21 +25,22 @@
 
 ![通知栏计时卡](docs/screenshots/notification-card.png)
 
-> 截图已裁掉系统状态栏。多数机型锁屏上会显示同样的卡片，个别 ROM 需要手动放行，见下方排查。
+> 截图已裁掉系统状态栏。锁屏上能不能看到同样的卡片取决于厂商 ROM 是否放行锁屏通知，个别 ROM 需要手动放行，见下方排查。
 
 ## 功能
 
 **专注页（底部左 Tab）**
 - 空闲时只有一个大按钮「开始专注」
-- 点击后输入这次专注的事项，或从「最近事项」一键点选（同一事项颜色永远一致，**不同事项几乎不会撞色**）；点「管理」可删除/清空不需要的快捷事项
+- 点击后输入这次专注的事项，或从「最近事项」一键点选（**协调色板**：14 个颜色按感知距离挑过，两个不同事项不会撞成同一个颜色；同一事项在本机各处保持同色，事项特别多时颜色仍可能接近）；点「管理」可删除/清空不需要的快捷事项
 - 正计时走秒，支持「暂停/继续」（暂停的时间不计入专注时长）
 - 点「结束」需二次确认，避免误停；**时长精确到秒**（1分46秒就记1分46秒，统计自动精确合计，不再舍弃不足1分钟的部分）
+  - ⚠ 唯一的例外是**整次专注不足 1 秒**：这时不生成任何记录，结束时提示「本次没有产生记录」。不足 1 分钟但超过 1 秒的都会照记
 - **后台计时按时间戳算**：时长 = `现在 - 开始 - 暂停累计`，切后台、锁屏都不会走偏（不靠 setInterval 累加）。进程被系统杀掉后重开 App **通常**能接着恢复进行中的专注 —— 前提是本机存储没被清掉（清 App 数据 / 卸载会丢）
 - **忘了点结束不会被判作废**：超过 12 小时还没结束的专注，重开 App 会保留下来，并在**屏幕顶部挂一条常驻提醒条**（不会像普通提示那样两秒就没了，右上角 × 可手动关掉）；点「结束」时也会警告「已持续 XX，可能忘了点结束」。时长记错了没关系，结束后去统计页编辑这条记录就能修正
 - **「忘了点结束」只有一个判定口径**：顶部提醒条和结束弹层用的是同一个数（就是最终会记录下来的那个专注时长），不会出现「提示说 13 小时、记录却是 0 秒」这种自相矛盾
 
 **通知栏计时卡**
-- 专注期间有一条"进行中"常驻通知：事项名 + 走秒时间 + 「查看」按钮，点击回到 App（见上方真机截图）。**多数机型锁屏上也会显示同样的卡片**（与番茄ToDo 同机制），但这取决于厂商 ROM 是否放行锁屏通知，本项目无法代劳
+- 专注期间有一条"进行中"常驻通知：事项名 + 走秒时间 + 「查看」按钮，点击回到 App（见上方真机截图）。**锁屏上能不能看到同样的卡片，取决于厂商 ROM 是否放行锁屏通知**（MIUI 尤其容易需要手动开），本项目无法代劳；通知栏里的卡片则一定会出现
 - 暂停时时间冻结显示"已暂停"；结束卡片消失
 - 首次开始专注会请求**通知权限**（Android 13+），允许后卡片才可见；不允许不影响计时本身
 - 通知由 specialUse 前台服务驱动，**走字交给系统**：通知用 chronometer（起算点 = 开始时间 + 暂停累计）由 SystemUI 每秒绘制，所以本进程被后台冻结甚至回收时通知照样走秒，**不需要 WakeLock**；服务本身 60 秒一次心跳只为在进程重建或通知被系统清掉后按时间戳重算、自愈重发
@@ -48,7 +51,9 @@
 - 环形饼图：按专注事项聚合（自动合并同类项），可切换 今日 / 本月 / 今年，图下列表显示精确时长（`1分46秒`）与占比
 - 趋势折线图：按日（近30天）/ 按周（近12周）/ 按月（近12月）看总时长变化，可按事项筛选（比如只看「科研」的趋势）
 - 记录管理：记录列表可删除、可编辑（**事项名和时长都能改**，当时选错事项名或时长记错了改一次即可；跨零点拆分的同组记录会一并改名，改时长时按各条原占比分配、总时长毫秒级守恒），更早的记录点「加载更早」继续查看
+  - 列表每次显示**最近 30 条**，点「加载更早」再各多 30 条
 - **编辑只改专注时长，不动时间本身**：改完之后每条记录的**开始时间、结束时间、所属日期都保持原样**（不会拿新时长反推结束时间）。按原占比分配后如果某一段会超出它原来的时间区间，这一次修改**整体不生效**并给出提示 —— 不会把多出来的时长挪到别的日期去
+- **手动改时长有 24 小时上限**：填超过 24 小时会被拦下并提示「时长最多 24 小时」，此时**名称也不会被改**（不留下改了一半的状态）
 - **跨零点的专注自动按天拆分**：结束时按本地零点拆成多条记录，各段扣除落在该段内的暂停时间（各段之和 = 本次净专注时长，毫秒级守恒），「今天 / 昨天」等每日统计归属正确
 
 **备份与恢复（统计页底部）**
@@ -57,6 +62,7 @@
 - **导入按记录 id 合并**：同一条记录以导入的为准，本机独有的记录保留 —— **永远不会因为导入而删掉你已有的记录**
 - **换机 / 重装 / debug 换 release 前导一份**：这三件事都会丢记录（localStorage 跟着 App 私有目录走）。导一份能把**已完成的记录**带走；**备份里不含正在进行中的专注** —— 迁移或卸载前先把这次专注结束掉、确认提示「已记录专注」再导出
 - 导出的是**明文 JSON**，事项名和时长一眼能看见。传到网盘 / 聊天工具里之前自己掂量一下
+- 备份里**不含事项配色映射**：换机后会按同一套色板重新分配，具体颜色可能与旧机不同；同一事项在新机各处仍保持同色
 
 ## 三种入口，先对号入座
 
@@ -112,13 +118,28 @@ python -m http.server 8848 --bind 127.0.0.1 --directory www
 
 ## 自己改代码、打包、装到手机
 
-**只需要 Windows + PowerShell。** JDK 21、Android SDK、Gradle、Node.js 缺什么脚本自动装（装在 `%USERPROFILE%\tools\` 下，可重复运行，已装则复用），国内网络走镜像。Node 要求 ≥ v20。
+**只需要 Windows + PowerShell。** JDK 21、Android SDK、Gradle、Node.js 缺什么脚本自动装（装在 `%USERPROFILE%\tools\` 下，可重复运行，已装则复用）。Node 要求 ≥ v20。
 
 ```
 powershell -ExecutionPolicy Bypass -File app\build-apk.ps1            # debug 包（日常用）
 powershell -ExecutionPolicy Bypass -File app\build-apk.ps1 -Release   # release 包（首次自动生成签名）
 powershell -ExecutionPolicy Bypass -File app\build-apk.ps1 -Install   # 打完直接装到已连线的手机
 ```
+
+**首次构建要下的东西（心里有个数，别以为卡死了）**：Node ≈ 30 MB、JDK 21 ≈ 190 MB、Android cmdline-tools ≈ 130 MB、SDK platform + build-tools ≈ 800 MB、Gradle ≈ 130 MB —— **合计约 1.3～1.5 GB**，国内网络下**十几分钟**很正常。之后再跑就只增量编译，通常一两分钟。所有东西都落在 `%USERPROFILE%\tools\`，不污染系统目录。
+
+**国内网络都走镜像，且每个工具都有回退源**（某一个源挂了会自动换下一个）：
+
+| 工具 | 首选 | 回退 |
+|---|---|---|
+| Node.js | 淘宝 npmmirror | nodejs.org 官方 |
+| JDK 21 | 华为云 openjdk 镜像 | Adoptium 官方 API |
+| Android cmdline-tools | 腾讯云 AndroidSDK 镜像 | dl.google.com 官方 |
+| Gradle | 腾讯云 → 华为云 → 官方 | 三个依次回退 |
+| npm 依赖 | registry.npmmirror.com | registry.npmjs.org 官方 |
+
+> npm 这一条是**用 `--registry` 参数临时指定的**：脚本不会改你的全局 `~/.npmrc`，也不会往仓库里塞 `.npmrc`。
+> 你自己 `npm install` 时的 registry 设置不受影响。
 
 > ⚠ **脚本不会再动你本机的全局 Gradle 配置**：国内镜像写成项目内的 `app\android\mirrors.init.gradle`，构建时用 `--init-script` 只对这一次构建生效。
 > `%USERPROFILE%\.gradle\init.gradle` 对**本机所有 Gradle 工程**生效，脚本不碰它，也不需要你去删它。
@@ -127,8 +148,8 @@ powershell -ExecutionPolicy Bypass -File app\build-apk.ps1 -Install   # 打完�
 产物：原始的在 `app\android\app\build\outputs\apk\...`，脚本会**再复制一份带版本号的到 `_out\apk\`**（该目录已 gitignore）：
 
 ```
-_out\apk\tomato-clock-1.4.0-debug.apk
-_out\apk\tomato-clock-1.4.0-release.apk
+_out\apk\tomato-clock-1.5.0-debug.apk
+_out\apk\tomato-clock-1.5.0-release.apk
 ```
 
 装到手机的两种方式：
@@ -139,9 +160,24 @@ _out\apk\tomato-clock-1.4.0-release.apk
    powershell -ExecutionPolicy Bypass -File app\install-to-phone.ps1
    ```
 
+> ⚠ 第 2 种方式有前置条件：手机「设置 → 关于手机 → 连点版本号 7 次」开开发者选项 → 打开 USB 调试，
+> 首次连线要在手机上点「允许」。脚本会自己找 adb（先找 PATH，再找 `%USERPROFILE%\tools\android-sdk\platform-tools`），
+> 插了多台设备会提示你用 `-Serial <设备号>` 指定。
+
 应用 ID 为 `app.tomato.clock`，与拾穗集互不冲突。**debug 与 release 签名不同，不能互相覆盖安装**。
 
 装完请按 **[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)** 逐条验收（build-apk.ps1 末尾也会提示）。
+
+### 打包报错怎么排查
+
+| 报错 | 原因 | 怎么办 |
+|---|---|---|
+| `download failed: ...` / `all XXX mirrors failed` | 首选镜像连不上（脚本已自动换源，全都挂了才是这个） | 检查网络 / 代理；或手动把对应工具装到 `%USERPROFILE%\tools\` 再跑脚本（脚本检测到已装会直接复用） |
+| `npm ci 失败（registry=...）` | lockfile 与 package.json 不同步，或网络不通 | 脚本会自动换 registry 再试；仍失败就手动在 `app\` 下跑 `npm install` 再重跑构建 |
+| `版本号不一致：app\package.json = X，app\package-lock.json = Y` | 发版时漏改了 lockfile 的版本号 | 把 lockfile 里两处 `version` 改成和 package.json 一样 |
+| `Gradle 只产出了未签名包` | `keystore.properties` 缺失或字段不全 | 删掉 `app\android\tomato-release.keystore` 重新用 `-Release` 生成，或恢复你备份的密钥文件 |
+| `APK not found in ...` | 构建没产出产物 | 看前面 Gradle 的报错；多半是依赖没下全，重跑一次即可（脚本有缓存） |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | 手机里装的是另一种包型（debug / release），签名不同 | 先在 App 里导出备份 → 卸载手机上的番茄钟 → 装新包 → 导入备份 |
 
 ### 签名密钥与自动发布（重要）
 
@@ -165,11 +201,13 @@ _out\apk\tomato-clock-1.4.0-release.apk
 #### 所以发布新版本走本机
 
 > 目前的发布记录：**v1.4.0**（2026-10-27）是本仓库的首个 Release，APK 由作者本机打包后手动上传，
+> **v1.5.0**（2026-11-11）加上了新配色并做了构建脚本的国内镜像加固，同样是本机打包后手动上传。
 > 后续版本同样走这条路 —— 本仓库没有开启自动签名发布。
 
-发版前先把三处版本号改一致（`build-apk.ps1` 会校验，不一致直接报错）：
+发版前先把**四处**版本号改一致（`build-apk.ps1` 会校验，不一致直接报错）：
 
 - `app\package.json` 的 `version`
+- `app\package-lock.json` 的 `version`（**顶层和 `packages[""]` 里各有一处，两处都要改**）
 - `app\android\app\build.gradle` 的 `versionName`
 - `app\android\app\build.gradle` 的 `versionCode`（整数，每次发版 +1）
 
@@ -217,7 +255,9 @@ tomato_clock/
 │   ├── setup-release-secrets.ps1 # 把签名密钥传成 GitHub Actions secrets（自动发布关闭中，暂不用）
 │   ├── preview-web.ps1         # 本地起服务预览网页版
 │   ├── package.json            # Capacitor 依赖与版本号
+│   ├── package-lock.json       # 依赖锁定文件（发版时版本号要跟 package.json 一起改）
 │   └── android/                # 安卓工程（cap add 生成）
+│       ├── build.gradle        # 版本号（versionName / versionCode）与签名配置
 │       └── app/src/main/java/app/tomato/clock/
 │           ├── MainActivity.java       # 窗口 / 边距（键盘、状态栏）处理
 │           ├── TimerServicePlugin.java # 通知栏计时卡的 JS 入口
@@ -225,20 +265,54 @@ tomato_clock/
 │           └── DataTransferPlugin.java  # 备份/恢复：系统文件选择器（SAF）
 ├── docs/
 │   ├── ACCEPTANCE.md           # 装机验收清单 + 已知限制
-│   ├── EXECUTION_PLAN.md      # 本轮发布前的方案与验收依据
+│   ├── EXECUTION_PLAN.md       # 2026-10-27 那轮的方案存档（已过期，仅作历史参考）
 │   └── screenshots/            # 7 张截图（6 张网页渲染 + 1 张真机）与 regenerate.py
 ├── tools/regression/           # 回归脚本（开发者用，不参与打包）
-│   ├── browser-tests.js        # 真浏览器回归：跨零点分段 / 记账幂等 / 跨日编辑 / 导入校验 / 双页面交错
-│   └── test-build-scripts.ps1  # 构建脚本回归：语法 / sdk.dir 转义 / 首次运行顺序 / 全局配置不被改写
+│   ├── browser-tests.js        # 真浏览器回归（9 组 120+ 项）：计时分段 / 记账幂等 / 跨日编辑 /
+│   │                            #   导入校验 / 双页面交错 / 旧数据迁移 / 事项配色
+│   └── test-build-scripts.ps1  # 构建脚本回归：语法 / sdk.dir 转义 / 首次运行顺序 / 镜像隔离 / 版本号一致
 ├── legacy/                     # 旧桌面网页版（倒计时版），仅留档
 ├── preview-web.bat             # 双击预览网页版
 ├── LICENSE                     # MIT
 └── README.md
 ```
 
+## 回归测试怎么跑
+
+两条命令，都在**仓库根目录**执行：
+
+```
+node tools\regression\browser-tests.js                                   # 真浏览器回归
+powershell -ExecutionPolicy Bypass -File tools\regression\test-build-scripts.ps1   # 构建脚本静态检查
+```
+
+- **第一条**是**真浏览器**回归：脚本自己找 Chrome 或 Edge（装了任一个即可），用无头模式起一个临时浏览器，
+  只在本机 `127.0.0.1` 上开个临时服务加载 `www/index.html`，跑完自动清理临时 profile。
+  **不依赖 puppeteer / Playwright**，只用 Node 自带模块 + 原生 CDP，Node ≥ 20 即可。
+- **第二条**只做静态检查：语法、`sdk.dir` 路径转义（中文 / 空格）、首次运行的目录顺序、
+  镜像配置有没有污染全局 Gradle、版本号是否一致。**不下载、不打包、不碰你的全局配置。**
+- 两条都是**只读**的，跑完不会改动仓库文件；测试数据全是脚本造的合成数据，**不碰你的真实专注记录**。
+
+覆盖范围（9 组）：计时与跨零点分段 / 结束记账的失败恢复与幂等 / 跨日编辑的越界拒绝与占比分配 /
+导入校验 / 同源多页面交错 / 只改名称的毫秒保留 / 旧数据迁移的并发安全 / 事项配色 / 构建脚本。
+
 ## 数据与隐私
 
-- 数据存在 App 私有的 localStorage（键：`tomato.sessions` / `tomato.ongoing` / `tomato.recentTasks` / `tomato.migratedV2` / `tomato.probe`），**只在本机**，卸载 App 才会清掉
+- 数据存在 App 私有的 localStorage，**只在本机**，卸载 App 才会清掉。本项目用到的键一共这些：
+
+  | 键 | 存什么 | 你需要关心吗 |
+  |---|---|---|
+  | `tomato.sessions` | 已完成的专注记录（数组） | 你的专注数据本体 |
+  | `tomato.ongoing` | 正在进行中的那一次专注 | 备份里**不含**它 |
+  | `tomato.recentTasks` | 最近用过的事项（快捷选项） | 备份里含它 |
+  | `tomato.taskColors` | 事项 → 颜色的映射（版本化） | 备份里**不含**它 |
+  | `tomato.migratedV2` | 旧版数据是否已迁移的标记 | 不用管 |
+  | `tomato.records` | 旧桌面版（倒计时）的原始数据 | 只用于一次性迁移，迁移后不删不改 |
+  | `tomato.lock.writer` | 多页面写权限的租约名单（退化模式下用） | 不用管，每秒续租 |
+  | `tomato.probe` | 启动时探测本机存储能不能写的临时键 | 写完立刻删 |
+
+  - `tomato.taskColors` 是**事项 -> 颜色**的映射（版本化）：同一事项在任何地方都是同一个颜色，换筛选、排序、刷新、换标签页打开都不变；新增事项只在末尾追加，不会把老事项的颜色改掉。删掉它只是让颜色重新分配，不影响任何记录
+  - `tomato.lock.*` 里的另外几个（`sessions` / `ongoing` / `recent` / `colors`）是 Web Locks 的**锁名**，不是存数据的键
 - 计时进行中时，原生侧还会把事项名、开始时间、暂停累计写进 `SharedPreferences`（`tomato_timer_state`），只用于进程被系统回收后恢复通知卡；**通知栏（以及放行锁屏通知的机型）会显示当前事项名**
 - 清单里**刻意没有** `INTERNET` 权限：Capacitor 的 `https://localhost` 由原生 scheme handler 在内存里拦截、直接从 APK 资源读文件，不监听任何端口也不发任何网络请求，所以完全不需要联网权限
 - 清单里的权限只有 `VIBRATE`（震动反馈）和通知栏计时卡必需的三项（`POST_NOTIFICATIONS` / `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_SPECIAL_USE`），都不碰数据。**备份 / 恢复走 SAF（系统文件选择器），不需要存储权限** —— App 不碰外部存储路径，保存位置由你自己选
@@ -254,9 +328,29 @@ tomato_clock/
 - **换包型（debug ↔ release）仍需卸载重装**（两者签名不同），会丢记录 —— 换之前先在统计页「备份与恢复」导一份数据
 - **同一个浏览器的多个标签页共享同一份数据**：浏览器支持 Web Locks 时（桌面 Chrome / Edge 实测），写入走跨页面互斥锁，两个页面各记各的不会互相覆盖，删掉的记录也不会被旧页面复活；同一条记录被两个页面同时改会提示冲突、要求刷新后重试。浏览器不支持 Web Locks 时（如 `file://` 直开），App 会退化成**单写页面模式**：只有一个页面能写，其它页面只读并提示（可写页面关掉后自动接手）
 - **备份不含进行中的专注**：导出的 JSON 只有已完成的记录和快捷事项。换机 / 卸载 / 换包型之前，先把这次专注结束掉、确认提示「已记录专注」，再导出
+- **备份也不含事项配色映射**：换机后会按同一套色板重新分配，具体颜色可能与旧机不同；同一事项在新机各处仍保持同色
+- **色板只有 14 个颜色**：事项多于 14 个时会按确定性的方式继续扩展，颜色互不重复，但**相邻的两个扩展色不一定一眼分得开** —— 这是物理上限，不吹
 - 通知卡可见性依赖厂商 ROM 的锁屏通知设置，MIUI 上尤其容易需要手动放行
 - **导出的 JSON 是明文**，事项名和时长一眼能看见；传到网盘 / 聊天工具之前自己掂量
 - **前台服务用的是 `specialUse` 类型**（为了绕开 `dataSync` 6 小时硬超时）。直装 APK 完全没问题；但若要上架 Google Play，`specialUse` 需要提交用途说明并通过审核
+- **Android WebView（App 里跑的 `https://localhost`）是否提供 Web Locks 未在真机验证**：若不提供，App 会按同一套能力检测自动切到单写页面模式（详见上面「在电脑上预览」里的说明）
+
+## v1.5.0 变更
+
+**事项配色重做**
+- 旧版是「12 个固定色取模」，两个不同事项很容易撞成同一个颜色（`科研` 和 `改代码` 都落在那个灰色上），饼图上两瓣一模一样
+- 现在改成 **14 色协调色板**：色相在色轮上等距排开、明度高低交错，两两之间有感知距离下界（实测最小 0.0935），不会再撞色
+- 每个颜色压白字的对比度都验过 ≥ 4.65:1（选中事项的 chip 就是白字压在事项色块上）
+- 颜色映射存本机（`tomato.taskColors`）：同一事项在饼图 / 图例 / 记录 / 快捷事项 / 趋势筛选 chip 上永远同色；换筛选、排序、刷新、换标签页打开都不变；新增事项只在末尾追加，不改老事项的颜色
+
+**一键打包的国内网络加固**
+- JDK 21、cmdline-tools 原来各只有一个源（实际都会绕到 GitHub / `dl.google.com`），国内经常连不上，一失败整个构建就停在第一步 —— 现在每个大件都有「国内镜像优先 + 官方兜底」的候选列表
+- npm 安装原来完全依赖你全局的 `~/.npmrc`；现在用 `--registry` 临时指定，**不改你的全局配置，也不往仓库里塞 `.npmrc`**
+
+**文档与验收**
+- README 补齐：回归测试怎么跑、最低系统版本、首次构建的下载量与耗时预期、常见报错排查、三个容易踩的阈值
+- 验收清单补上「12 小时」的判定阈值；修正了一条在实现里并不存在的提示文案
+- `docs/EXECUTION_PLAN.md` 标注为历史归档（上一轮的方案原文，不再代表现状）
 
 ## 相关项目
 
