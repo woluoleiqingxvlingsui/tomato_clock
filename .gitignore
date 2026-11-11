@@ -22,3 +22,6 @@ Thumbs.db
 
 # 打包产物输出目录（build-apk.ps1 / install-to-phone.ps1 生成的 APK 副本）
 _out/
+
+# 本机人工真机验收记录（机型、日期等，不随源码提交）
+device-acceptance*.json

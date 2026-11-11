@@ -227,6 +227,7 @@ button{font-family:inherit}
     <div class="run-task"><span class="dot" id="run-dot"></span><span id="run-name">专注</span></div>
     <div class="run-time" id="run-time">00:00:00</div>
     <div class="run-hint" id="run-hint"></div>
+    <p id="clock-warning" class="field-hint hidden" role="status" style="max-width:340px;margin:12px auto;color:#a65b36"></p>
     <div class="run-actions">
       <button id="btn-pause" class="btn btn-ghost">暂停</button>
       <button id="btn-end" class="btn btn-danger">结束</button>
@@ -407,6 +408,7 @@ button{font-family:inherit}
 <div id="toast"></div>
 
 <script src="chart.umd.js"></script>
+<script src="focus-clock.js"></script>
 <script>
 "use strict";
 /* ============ 存储 ============ */
@@ -921,6 +923,45 @@ function mutateRecent(fn){
 
 /* ============ 锁屏/通知栏计时卡（原生前台服务；电脑浏览器里为空操作） ============ */
 const TimerSvc=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())?window.Capacitor.Plugins.TimerService:null;
+const NativeClock=TimerSvc&&(window.Capacitor.Plugins.FocusClock||null);
+const browserClockOrigin=Number.isFinite(performance.timeOrigin)?performance.timeOrigin:Date.now()-performance.now();
+let nativeClockSample=null,nativeClockFlight=null,lastClockCheckpoint=0;
+function sampleClock(){
+  const p=performance.now();
+  if(nativeClockSample)return {source:"android",epoch:nativeClockSample.epoch,
+    monoMs:nativeClockSample.monoMs+Math.max(0,p-nativeClockSample.perfAt),wallMs:Date.now()};
+  return {source:"browser",epoch:"browser",monoMs:browserClockOrigin+p,wallMs:Date.now()};
+}
+async function refreshNativeClock(){
+  if(!NativeClock||!NativeClock.sample)return;
+  if(nativeClockFlight)return nativeClockFlight;
+  nativeClockFlight=(async()=>{
+    try{
+      const s=await NativeClock.sample();
+      if(Number.isFinite(s.monoMs)&&typeof s.epoch==="string")
+        nativeClockSample={monoMs:s.monoMs,epoch:s.epoch,perfAt:performance.now()};
+    }catch(e){nativeClockSample=null /* 降级时由计时核心标记需要核对。 */}
+  })();
+  try{await nativeClockFlight}finally{nativeClockFlight=null}
+}
+function focusNow(sess){return FocusClock.now(sess,sampleClock())}
+function clockReviewText(sess){
+  const c=sess&&sess.clock;
+  if(c&&c.uncertain)return "计时基准无法连续恢复，当前时长含估算，请在结束时核对记录。";
+  if(c&&c.adjusted)return "检测到系统时间调整，专注时长按连续计时保留，请在结束时核对记录日期和时长。";
+  return "";
+}
+async function checkpointClock(){
+  if(!ongoing)return;
+  if(!hasWebLocks&&!leaseValidNow().ok)return;
+  const mine=ongoing,sample=sampleClock();
+  await mutateOngoing(cur=>{
+    if(!cur||!sameSession(cur,mine))return {abort:true};
+    if(cur.clock&&mine.clock){cur.clock.adjusted=cur.clock.adjusted||mine.clock.adjusted;cur.clock.uncertain=cur.clock.uncertain||mine.clock.uncertain}
+    FocusClock.checkpoint(cur,sample);
+    return {value:cur};
+  });
+}
 function svcCall(method,arg){
   if(!TimerSvc)return;
   try{
@@ -935,7 +976,11 @@ function svcSyncState(){
     taskName:ongoing.taskName,
     startTs:String(ongoing.startTs),
     pausedAccumMs:String(ongoing.pausedAccumMs),
-    pausedAt:String(ongoing.pausedAt||-1)
+    pausedAt:String(ongoing.pausedAt||-1),
+    elapsedMs:String(Math.round(elapsedMs())),
+    sampleRealtime:nativeClockSample?String(Math.round(sampleClock().monoMs)):"",
+    clockEpoch:nativeClockSample?nativeClockSample.epoch:"",
+    clockReview:!!clockReviewText(ongoing)
   });
 }
 
@@ -980,8 +1025,9 @@ function fmtClock(ms){
 }
 function fmtDur(ms){
   ms=Math.max(0,ms);
-  // 不足 1 秒的分段也要看得见：显示成 "0秒" 会让人以为这条记录丢了
-  if(ms>0&&ms<1000)return (ms/1000).toFixed(1)+"秒";
+  // 不足 1 秒的分段也要看得见：极小分段显示 "<0.1秒"，不能四舍五入成 "0.0秒"
+  if(ms>0&&ms<100)return "<0.1秒";
+  if(ms>=100&&ms<1000)return (ms/1000).toFixed(1)+"秒";
   const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),ss=s%60;
   if(h>0)return h+"小时"+(m%60?m%60+"分":"")+(ss?ss+"秒":"");
   if(m>0)return ss>0?m+"分"+ss+"秒":m+"分钟";
@@ -1052,8 +1098,7 @@ function isStale(){return !!ongoing&&elapsedMs()>STALE_MS}
    切后台/锁屏/页面被冻结都不会影响准确性 */
 function elapsedMs(){
   if(!ongoing)return 0;
-  const now=ongoing.pausedAt||Date.now();
-  return Math.max(0,now-ongoing.startTs-ongoing.pausedAccumMs);
+  return FocusClock.elapsed(ongoing,sampleClock());
 }
 
 function enterRunning(){
@@ -1076,6 +1121,8 @@ function updateRunUI(){
 }
 function renderRunTime(){
   if(ongoing&&!runSec.classList.contains("hidden"))$("#run-time").textContent=fmtClock(elapsedMs());
+  const warning=$("#clock-warning"),text=clockReviewText(ongoing);
+  warning.textContent=text;warning.classList.toggle("hidden",!text);
 }
 /* 「忘了点结束」的常驻提醒条。
    只在「显示/隐藏」或「分钟数变了」时才动 DOM，避免每 250ms 重排一次。 */
@@ -1091,9 +1138,18 @@ function updateStaleBanner(){
     +"，可能忘了点结束。不想保留就点「结束」；时长记错了，去统计页编辑这条记录就能改。";
 }
 $("#stale-x").onclick=()=>{staleDismissed=true;updateStaleBanner()};
-setInterval(()=>{renderRunTime();updateStaleBanner()},250);
+setInterval(()=>{
+  renderRunTime();updateStaleBanner();refreshStatsForCalendar();
+  if(!document.hidden&&ongoing&&performance.now()-lastClockCheckpoint>=10000){
+    lastClockCheckpoint=performance.now();
+    refreshNativeClock().then(checkpointClock).catch(()=>{});
+  }
+},250);
 document.addEventListener("visibilitychange",()=>{
-  if(!document.hidden){renderRunTime();updateStaleBanner();svcSyncState()}
+  if(!document.hidden){
+    refreshStatsForCalendar();
+    refreshNativeClock().then(()=>{renderRunTime();updateStaleBanner();svcSyncState();return checkpointClock()}).catch(()=>{});
+  }else{checkpointClock().catch(()=>{})}
 });
 
 /* ---- 开始弹层 ---- */
@@ -1138,12 +1194,14 @@ function isCommittedFocus(sess){
 }
 
 async function goStart(){
+  await refreshNativeClock();
   if(ongoing){closeSheet();enterRunning();return}
   const name=taskInput.value.trim()||"专注";
   // 锁内重读盘上的会话：别的标签页可能已经在专注了，不能被静默覆盖
   const res=await mutateOngoing(cur=>{
     if(cur&&!isCommittedFocus(cur))return {abort:true,reason:"other-page"};
-    return {value:{taskName:name,startTs:Date.now(),pausedAccumMs:0,pausedAt:null,pauseLog:[],sessionId:uid()}};
+    const startTs=Date.now();
+    return {value:{taskName:name,startTs,pausedAccumMs:0,pausedAt:null,pauseLog:[],sessionId:uid(),clock:FocusClock.create(startTs,sampleClock())}};
   });
   if(res.aborted){
     toast("另一个标签页/窗口已经在专注了，不能覆盖。请先在那边结束，或关掉那个标签页。");
@@ -1155,21 +1213,26 @@ async function goStart(){
     const i=cur.indexOf(name);if(i>=0)cur.splice(i,1);
     cur.unshift(name);if(cur.length>8)cur.length=8;
   });
-  svcCall("start",{taskName:name,startTs:String(ongoing.startTs),pausedAccumMs:"0",pausedAt:"-1"});
+  const sample=sampleClock();
+  svcCall("start",{taskName:name,startTs:String(ongoing.startTs),pausedAccumMs:"0",pausedAt:"-1",
+    elapsedMs:String(Math.round(elapsedMs())),sampleRealtime:nativeClockSample?String(Math.round(sample.monoMs)):"",
+    clockEpoch:nativeClockSample?sample.epoch:"",clockReview:false});
   closeSheet();enterRunning();updateStaleBanner();vibrate(20);beep("start");
 }
 
 /* ---- 暂停 / 结束 ---- */
 async function togglePause(){
+  await refreshNativeClock();
   if(!ongoing)return;
   const mine=ongoing;
   // 锁内重读盘上的会话再改：两个页面同时点暂停/继续时不会互相踩
   const res=await mutateOngoing(cur=>{
     if(!cur)return {abort:true,reason:"none"};
     if(!sameSession(cur,mine))return {abort:true,reason:"other-page"};
-    const now=Date.now();
+    const now=focusNow(cur);
     if(cur.pausedAt){
-      (cur.pauseLog=cur.pauseLog||[]).push({from:cur.pausedAt,to:now});
+      // 没有完整暂停明细的旧会话始终走累计时长，不能把新明细当成全部历史。
+      if(Array.isArray(cur.pauseLog))cur.pauseLog.push({from:cur.pausedAt,to:now});
       cur.pausedAccumMs+=now-cur.pausedAt;
       cur.pausedAt=null;
     }else{
@@ -1188,7 +1251,8 @@ async function togglePause(){
   if(!res.ok){if(res.reason!=="read-only")toast("⚠ 没能保存暂停状态");return}
   svcSyncState();updateRunUI();vibrate(15);
 }
-function requestEnd(){
+async function requestEnd(){
+  await refreshNativeClock();
   if(!ongoing)return;
   const dur=elapsedMs();
   $("#end-dur").textContent=fmtDur(dur);
@@ -1197,8 +1261,9 @@ function requestEnd(){
   // 时长不准没关系，记下来之后去统计页编辑这条记录就能修正。
   // 判定和顶部常驻提醒条用同一个口径（isStale），两处结论不会打架。
   const warn=$("#end-warn");
-  if(isStale()){
-    warn.textContent="⚠ 已持续 "+fmtDur(dur)+"，可能忘了点结束。时长不准没关系，结束后可在统计页编辑这条记录修正。";
+  if(isStale()||clockReviewText(ongoing)){
+    warn.textContent=(isStale()?"⚠ 已持续 "+fmtDur(dur)+"，可能忘了点结束。":"")+clockReviewText(ongoing)
+      +" 结束后可在统计页编辑记录核对时长。";
     warn.style.display="";
   }else{
     warn.textContent="";warn.style.display="none";
@@ -1211,7 +1276,7 @@ function requestEnd(){
    纯函数：不碰存储，回归脚本可以直接验。 */
 function buildSegments(sess){
   const startTs=sess.startTs;
-  const endTs=sess.pausedAt||Date.now();
+  const endTs=sess.pausedAt||(FocusClock.valid(sess.clock)?focusNow(sess):Date.now());
   const pauses=sess.pauseLog;
   if(!pauses){ // 升级前开始的旧会话没有暂停明细，退回单条记录，保证时长准确
     const dur=Math.max(0,endTs-startTs-(sess.pausedAccumMs||0));
@@ -1242,6 +1307,7 @@ function buildSegments(sess){
 }
 
 async function finishEnd(){
+  await refreshNativeClock();
   if(!ongoing)return;
   const sess=ongoing;
   const gid=sess.sessionId||(sess.sessionId=uid());
@@ -1255,7 +1321,9 @@ async function finishEnd(){
     if(cur.some(s=>s.startTs===sess.startTs&&(s.taskName||"专注")===(sess.taskName||"专注")))return {abort:true,reason:"already"};
     if(!built.segments.length)return {abort:true,reason:"empty"};
     for(const seg of built.segments){
-      cur.push({id:uid(),gid,taskName:sess.taskName,startTs:seg.startTs,endTs:seg.endTs,durationMs:seg.durationMs,date:seg.date});
+      const record={id:uid(),gid,taskName:sess.taskName,startTs:seg.startTs,endTs:seg.endTs,durationMs:seg.durationMs,date:seg.date};
+      if(clockReviewText(sess)){record.clockReview=true;record.actualEndTs=Date.now()}
+      cur.push(record);
     }
     return {added:built.segments.length};
   });
@@ -1351,7 +1419,8 @@ function renderPie(){
   const total=rows.reduce((a,x)=>a+x.ms,0)||1;
   const colors=rows.map(x=>x.gray?"#cdc6c5":colorFor(x.name));
   const labels=rows.map(x=>x.name);
-  const data=rows.map(x=>Math.round(x.ms/1000));
+  // 图表内部保留秒的小数（毫秒 / 1000），不能把亚秒分段四舍五入成 0
+  const data=rows.map(x=>x.ms/1000);
   if(!pieChart){
     pieChart=new Chart(canvas,{
       type:"doughnut",
@@ -1363,7 +1432,8 @@ function renderPie(){
           tooltip:{
             callbacks:{label:c=>{
               const ds=c.dataset.data,total2=ds.reduce((a,b)=>a+b,0)||1;
-              const ms=c.parsed*1000,pct=Math.round(ms/total2*100);
+              // 图表数据的单位是秒：占比必须用秒算，不能拿毫秒除以秒（会放大 1000 倍）
+              const sec=c.parsed,ms=sec*1000,pct=Math.round(sec/total2*100);
               return " "+c.label+" · "+fmtDur(ms)+" · "+pct+"%";
             }}
           }
@@ -1428,7 +1498,8 @@ function renderTrendChips(){
 function renderTrend(){
   const {buckets,keyOf}=trendBuckets(trendGran);
   const filtered=trendTask?sessions.filter(s=>(s.taskName||"专注")===trendTask):sessions;
-  const data=buckets.map(b=>Math.round(filtered.filter(s=>keyOf(s)===b.key).reduce((a,s)=>a+s.durationMs,0)/1000));
+  // 与饼图一致：保留亚秒精度，显示时再格式化
+  const data=buckets.map(b=>filtered.filter(s=>keyOf(s)===b.key).reduce((a,s)=>a+s.durationMs,0)/1000);
   const color=trendTask?colorFor(trendTask):"#f5544d";
   if(!lineChart){
     lineChart=new Chart($("#line-canvas"),{
@@ -1474,7 +1545,7 @@ function renderRecords(){
     const range=pad2(d.getHours())+":"+pad2(d.getMinutes())+" – "+pad2(e.getHours())+":"+pad2(e.getMinutes());
     const name=s.taskName||"专注";
     return '<li><span class="rec-dot" style="background:'+colorFor(name)+'"></span>'
-      +'<div class="rec-main"><div class="rec-name">'+esc(name)+'</div><div class="rec-sub">'+ds+" · "+range+'</div></div>'
+      +'<div class="rec-main"><div class="rec-name">'+esc(name)+'</div><div class="rec-sub">'+ds+" · "+range+(s.clockReview?" · ⚠ 请核对时长":"")+'</div></div>'
       +'<span class="rec-dur">'+fmtDur(s.durationMs)+'</span>'
       +'<button class="rec-edit" data-id="'+esc(s.id)+'" aria-label="编辑">'+PENCIL_SVG+"</button>"
       +'<button class="rec-del" data-id="'+esc(s.id)+'" aria-label="删除">'+TRASH_SVG+"</button></li>";
@@ -1496,7 +1567,13 @@ $("#rec-list").addEventListener("click",e=>{
   dlgDel.classList.add("open");
 });
 
+let statsRenderedCalendar="";
+function statsCalendarKey(){const d=new Date();return dateStr(d)+"/"+d.getTimezoneOffset()}
+function refreshStatsForCalendar(){
+  if(!document.hidden&&$("#page-stats").classList.contains("active")&&statsRenderedCalendar!==statsCalendarKey())renderStats();
+}
 function renderStats(){
+  statsRenderedCalendar=statsCalendarKey();
   renderOverview();renderPie();renderTrendChips();renderTrend();renderRecords();
 }
 
@@ -1508,6 +1585,8 @@ function renderStats(){
    浏览器端走 Blob 下载 / 文件选择框。 */
 const DT=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())
   ?(window.Capacitor.Plugins.DataTransfer||null):null;
+// 与 Android DataTransferPlugin 一致：拒绝异常大的文件，避免读入阶段耗尽内存
+const MAX_IMPORT_BYTES=10*1024*1024;
 
 function exportPayload(){
   return {
@@ -1599,6 +1678,8 @@ function normalizeSession(r){
   const id=typeof r.id==="string"&&r.id?r.id:uid();
   const o={id,taskName,startTs,endTs,durationMs,date};
   if(typeof r.gid==="string"&&r.gid)o.gid=r.gid;
+  if(r.clockReview===true)o.clockReview=true;
+  if(Number.isFinite(r.actualEndTs)&&Math.abs(r.actualEndTs)<=MAX_TS)o.actualEndTs=r.actualEndTs;
   return o;
 }
 function parseImport(text){
@@ -1626,7 +1707,12 @@ async function pickImportFile(){
       $("#import-text").value=r.json;
       toast("已读取文件，点「导入」确认");
       return;
-    }catch(e){/* 真出错才落到浏览器方案 */}
+    }catch(e){
+      // 超限必须直接拒绝，不能再退回 FileReader 把同一个大文件读进内存
+      const msg=String(e&&(e.message||e)||"");
+      if(msg.indexOf("file exceeds 10 MiB limit")>=0){toast("文件超过 10 MiB，无法导入");return}
+      // 其它原生读取错误仍可落到浏览器方案
+    }
   }
   $("#file-import").click();
 }
@@ -1647,6 +1733,10 @@ async function doImport(){
     cur.length=0;
     for(const s of byId.values())cur.push(s);
   });
+  if(!merged.ok){
+    if(merged.reason!=="read-only")toast("⚠ 导入失败，专注记录未保存，请保留备份文件后重试（检查存储空间或权限）");
+    return;
+  }
   let savedRecent=true;
   if(res.recent.length){
     const r=await mutateRecent(cur=>{
@@ -1657,12 +1747,10 @@ async function doImport(){
     savedRecent=r.ok;
   }
   renderStats();
-  dlgImport.classList.remove("open");
-  if(!merged.ok&&merged.reason==="read-only")return;   // 只读页面：提示已由 ensureWritable 给出
   const skipped=res.skipped?("，跳过 "+res.skipped+" 条无效数据"):"";
-  toast((merged.ok&&savedRecent)
-    ?"导入完成：新增 "+added+" 条，更新 "+updated+" 条"+skipped
-    :"⚠ 导入已生效，但没能完整保存到本机（存储空间不足或被禁用），重开 App 后可能丢失");
+  if(!savedRecent){toast("⚠ 专注记录已保存，快捷事项未能保存。请保留备份文件后重试"+skipped);return}
+  dlgImport.classList.remove("open");
+  toast("导入完成：新增 "+added+" 条，更新 "+updated+" 条"+skipped);
 }
 $("#btn-export").onclick=openExport;
 $("#btn-export-save").onclick=saveExportFile;
@@ -1676,6 +1764,7 @@ $("#file-import").addEventListener("change",e=>{
   const f=e.target.files&&e.target.files[0];
   e.target.value="";
   if(!f)return;
+  if(f.size>MAX_IMPORT_BYTES){toast("文件超过 10 MiB，无法导入");return}
   const fr=new FileReader();
   fr.onload=()=>{$("#import-text").value=String(fr.result||"");toast("已读取文件，点「导入」确认")};
   fr.onerror=()=>toast("读取文件失败");
@@ -1804,6 +1893,7 @@ async function doEdit(){
       t.taskName=name;
       // 只改有效专注时长：startTs / endTs / date 一律不动，不拿新时长反推 endTs
       if(plan)t.durationMs=plan.values[t.id];
+      if(editDurTouched)t.clockReview=false;
     }
     return {edited:curTargets.length};
   });
@@ -1933,6 +2023,7 @@ if(window.Chart){
    时长不准没关系 —— 结束后去统计页编辑这条记录就能修正。 */
 async function boot(){
   const msg=[];
+  await refreshNativeClock();
   // 先决定"谁能写"：没有 Web Locks 时要竞选一次（拿到写权限的页面才能改数据）
   if(!hasWebLocks){
     await claimWriterRole();
@@ -1971,7 +2062,13 @@ async function boot(){
     if(cleared.aborted)ongoing=readOngoing();
     else{ongoing=null;msg.push("上次的专注已经保存好了，已自动恢复界面")}
   }
-  if(ongoing)enterRunning();else enterIdle();
+  if(ongoing){
+    // 浏览器重新加载后，无法证明离开页面期间是否校时/休眠；明确标记估算。
+    if(FocusClock.valid(ongoing.clock)&&ongoing.clock.source==="browser")ongoing.clock.uncertain=true;
+    focusNow(ongoing);
+    enterRunning();
+    await checkpointClock();
+  }else enterIdle();
   // 没有进行中的专注时这里会发 stop，顺手清掉可能残留的通知服务
   svcSyncState();
   if(!storageOK)msg.push("浏览器禁用了本地存储，本次专注不会被保存");

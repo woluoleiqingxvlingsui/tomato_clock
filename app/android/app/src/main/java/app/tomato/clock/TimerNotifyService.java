@@ -6,17 +6,21 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
+import androidx.core.content.ContextCompat;
 
 /**
  * 专注计时前台服务：通知栏常驻计时卡（与番茄ToDo 同机制）。
@@ -39,6 +43,10 @@ public class TimerNotifyService extends Service {
     public static final String EXTRA_START_TS = "startTs";
     public static final String EXTRA_PAUSED_ACCUM = "pausedAccum";
     public static final String EXTRA_PAUSED_AT = "pausedAt"; // -1 = 运行中
+    public static final String EXTRA_ELAPSED = "elapsedMs";
+    public static final String EXTRA_REALTIME = "sampleRealtime";
+    public static final String EXTRA_EPOCH = "clockEpoch";
+    public static final String EXTRA_REVIEW = "clockReview";
 
     private static final String CHANNEL_ID = "tomato-timer-v2";
     private static final String LEGACY_CHANNEL_ID = "tomato-timer";
@@ -52,7 +60,23 @@ public class TimerNotifyService extends Service {
     private long startTs;
     private long pausedAccum;
     private long pausedAt = -1;
+    private long elapsedAtAnchor;
+    private long realtimeAnchor;
+    private String clockEpoch = "";
+    private boolean measured;
+    private boolean clockReview;
     private boolean heartbeatScheduled = false;
+    private final BroadcastReceiver timeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) { updateNotification(); }
+    };
+
+    @Override public void onCreate() {
+        super.onCreate();
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_TIME_CHANGED);
+        filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+        ContextCompat.registerReceiver(this, timeReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
 
     private final Runnable heartbeat = new Runnable() {
         @Override
@@ -91,6 +115,20 @@ public class TimerNotifyService extends Service {
             if (pAt >= -1) {
                 pausedAt = pAt;
             }
+            long elapsed = intent.getLongExtra(EXTRA_ELAPSED, -1);
+            long realtime = intent.getLongExtra(EXTRA_REALTIME, -1);
+            String epoch = intent.getStringExtra(EXTRA_EPOCH);
+            if (elapsed >= 0) {
+                boolean reliable = realtime >= 0 && epoch != null && !epoch.isEmpty();
+                elapsedAtAnchor = elapsed;
+                realtimeAnchor = reliable ? realtime : SystemClock.elapsedRealtime();
+                clockEpoch = reliable ? epoch : ClockPlugin.epoch(this);
+                measured = true;
+                clockReview = !reliable || intent.getBooleanExtra(EXTRA_REVIEW, false);
+            } else if (ACTION_START.equals(intent.getAction())) {
+                measured = false;
+                clockReview = false;
+            }
             if (startTs <= 0) {
                 // 只有首次 START 才允许「从现在开始」；SYNC 打到空服务上说明计时早已结束，直接退场
                 if (ACTION_START.equals(intent.getAction())) {
@@ -100,14 +138,24 @@ public class TimerNotifyService extends Service {
                     return START_NOT_STICKY;
                 }
             }
-            persistState();
         } else if (startTs <= 0) {
             // START_STICKY 被系统重建：偏好里也没有有效会话就退场
             stopSelf();
             return START_NOT_STICKY;
         }
 
+        if (!measured) {
+            elapsedAtAnchor = Math.max(0, (pausedAt > 0 ? pausedAt : System.currentTimeMillis()) - startTs - pausedAccum);
+            realtimeAnchor = SystemClock.elapsedRealtime();
+            clockEpoch = ClockPlugin.epoch(this);
+            measured = true;
+        }
+        persistState();
+
         if (!startAsForeground()) {
+            cancelHeartbeat();
+            // 只停止本次 startId，避免误停这期间收到的新启动请求；失败实例也不得被系统重建。
+            stopSelfResult(startId);
             return START_NOT_STICKY;
         }
         restartHeartbeat();
@@ -182,8 +230,10 @@ public class TimerNotifyService extends Service {
 
     private Notification buildNotification() {
         boolean paused = pausedAt > 0;
-        long now = paused ? pausedAt : System.currentTimeMillis();
-        long elapsed = Math.max(0, now - startTs - pausedAccum);
+        boolean sameBoot = clockEpoch.equals(ClockPlugin.epoch(this));
+        long elapsed = TimerElapsed.measure(elapsedAtAnchor, realtimeAnchor,
+            SystemClock.elapsedRealtime(), paused, sameBoot);
+        boolean review = clockReview || !sameBoot;
 
         PendingIntent contentIntent = PendingIntent.getActivity(
             this,
@@ -201,13 +251,13 @@ public class TimerNotifyService extends Service {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(contentIntent)
             .addAction(0, "查看", contentIntent);
-        if (paused) {
+        if (paused || !sameBoot) {
             // chronometer 停不下来，暂停态换静态文案并隐藏时间位
-            b.setContentText("已暂停 · " + fmtShort(elapsed)).setShowWhen(false);
+            b.setContentText((review ? "需核对 · " : "已暂停 · ") + fmtShort(elapsed)).setShowWhen(false);
         } else {
             // 走字在系统侧：chronometer 按 base 推算已专注时长，进程被后台冻结也照走
-            b.setContentText("专注中")
-                .setWhen(startTs + pausedAccum)
+            b.setContentText(review ? "专注中 · 请核对时长" : "专注中")
+                .setWhen(System.currentTimeMillis() - elapsed)
                 .setUsesChronometer(true);
         }
         if (Build.VERSION.SDK_INT >= 31) {
@@ -239,6 +289,11 @@ public class TimerNotifyService extends Service {
             .putLong("startTs", startTs)
             .putLong("pausedAccum", pausedAccum)
             .putLong("pausedAt", pausedAt)
+            .putLong("elapsedAtAnchor", elapsedAtAnchor)
+            .putLong("realtimeAnchor", realtimeAnchor)
+            .putString("clockEpoch", clockEpoch)
+            .putBoolean("measured", measured)
+            .putBoolean("clockReview", clockReview)
             .apply();
     }
 
@@ -253,6 +308,11 @@ public class TimerNotifyService extends Service {
         startTs = sp.getLong("startTs", 0);
         pausedAccum = sp.getLong("pausedAccum", 0);
         pausedAt = sp.getLong("pausedAt", -1);
+        elapsedAtAnchor = sp.getLong("elapsedAtAnchor", 0);
+        realtimeAnchor = sp.getLong("realtimeAnchor", 0);
+        clockEpoch = sp.getString("clockEpoch", "");
+        measured = sp.getBoolean("measured", false);
+        clockReview = sp.getBoolean("clockReview", false);
     }
 
     /** specialUse 理论上不触发系统超时，但国产 ROM 魔改行为不可预测，一行代码买保险 */
@@ -265,6 +325,7 @@ public class TimerNotifyService extends Service {
     @Override
     public void onDestroy() {
         cancelHeartbeat();
+        unregisterReceiver(timeReceiver);
         super.onDestroy();
     }
 }

@@ -10,7 +10,7 @@
  *   - 所有数据都是脚本造的合成数据，不碰任何真实记录
  *
  * 覆盖：
- *   A. 计时与分段：跨零点 1200 毫秒、跨日暂停、零时长分段、整次不足 1 秒
+ *   A. 计时与分段：跨零点 1200 毫秒、跨日暂停、零时长分段、整次不足 1 秒、亚秒显示与图表精度
  *   B. 结束记账：历史写盘失败后可恢复、重试幂等、ongoing 清理失败后重开不重复记账
  *   C. 跨日编辑：超范围拒绝（字段全不变）、按占比分配（时间与日期不变）、取整边界、24 小时上限
  *   D. 导入校验：非法日期 / 越界时间戳 / 非法区间被跳过，合法记录照常合并
@@ -19,11 +19,15 @@
  *      筛选·刷新·追加后颜色稳定 / 存坏了不崩
  */
 'use strict';
+if(Number(process.versions.node.split('.')[0])<22||typeof WebSocket!=="function"){
+  console.error('浏览器回归测试需要 Node.js 22 或以上，并提供全局 WebSocket。请升级 Node 后重试。');
+  process.exit(2);
+}
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..', '..');
 const WWW = path.join(REPO, 'www');
@@ -235,6 +239,9 @@ const P = {
 
 /* ================================================================= 套件 */
 async function run() {
+  const unsupported=spawnSync(process.execPath,['--no-experimental-websocket',__filename],{encoding:'utf8'});
+  check('缺少 WebSocket 时在启动浏览器前给出清楚提示',unsupported.status===2&&unsupported.stderr.includes('Node.js 22'));
+  findBrowser();
   const { srv, port } = await startServer();
   const url = 'http://127.0.0.1:' + port + '/index.html';
   console.log('[server] ' + url + '（只绑 127.0.0.1）');
@@ -269,6 +276,41 @@ async function run() {
     s = await P.sessions(A);
     check('整次净时长不足 1 秒时不生成记录', s.length === 0, '实际 ' + s.length + ' 条');
     check('并给出"没有产生记录"的提示', (await P.toast(A)).includes('没有产生记录'), await P.toast(A));
+
+    // 亚秒分段不能再被格式化成 0，也不能在图表数据里被四舍五入成 0
+    check('1 毫秒显示为 <0.1秒（不是 0.0秒）',
+      await A.eval('return window.TomatoInternals.fmtDur(1)') === '<0.1秒');
+    check('49 毫秒显示为 <0.1秒（不是 0.0秒）',
+      await A.eval('return window.TomatoInternals.fmtDur(49)') === '<0.1秒');
+    check('400 毫秒显示为 0.4秒',
+      await A.eval('return window.TomatoInternals.fmtDur(400)') === '0.4秒');
+    await A.eval(`
+      const st=Date.now();
+      localStorage.setItem('tomato.migratedV2','true');
+      localStorage.setItem('tomato.sessions',JSON.stringify([
+        {id:'sub-400',taskName:'亚秒图表',startTs:st,endTs:st+400,durationMs:400,date:dateStr(new Date(st))}
+      ]));
+      localStorage.removeItem('tomato.ongoing');
+      return true;
+    `);
+    await A.reload();
+    await A.eval('switchTab("stats"); return true');
+    const subSecondChart = await A.eval(`return JSON.stringify({
+      pie:pieChart.data.datasets[0].data[0],
+      trend:lineChart.data.datasets[0].data[lineChart.data.datasets[0].data.length-1]
+    })`);
+    const SC = JSON.parse(subSecondChart);
+    check('400 毫秒记录进入饼图时是 0.4 秒（不再被舍入为 0）', SC.pie === 0.4, subSecondChart);
+    check('400 毫秒记录进入趋势图时是 0.4 秒（不再被舍入为 0）', SC.trend === 0.4, subSecondChart);
+
+    // 饼图 tooltip 的占比：数据单位是秒，占比也必须用秒算
+    const pieTooltip = await A.eval(`
+      const cb=pieChart.options.plugins.tooltip.callbacks.label;
+      const ctx={parsed:0.4,dataset:pieChart.data.datasets[0],label:'亚秒图表'};
+      return cb(ctx);
+    `);
+    check('饼图 tooltip 占比按秒计算（不会放大 1000 倍）',
+      /100%$/.test(pieTooltip) && !/00000%/.test(pieTooltip), pieTooltip);
 
     // 跨日暂停：昨天那 1 小时里暂停 30 分钟
     await P.seedOngoing(A, {
@@ -470,6 +512,17 @@ async function run() {
     const g2 = imported.find(x => x.id === 'imp-2');
     check('已有的合法 date 原样保留（没被当前时区改写）', g1 && g1.date === '2023-11-15', g1 && g1.date);
     check('缺日期的从合法 startTs 补齐', !!g2 && /^\d{4}-\d{2}-\d{2}$/.test(g2.date), g2 && g2.date);
+
+    // 文件入口也要挡住超限内容，避免 FileReader 先把大文件读进内存
+    const oversizeToast = await A.eval(`
+      const dt=new DataTransfer();
+      dt.items.add(new File([new Uint8Array(10*1024*1024+1)],'too-big.json',{type:'application/json'}));
+      const inp=document.querySelector('#file-import');
+      inp.files=dt.files;
+      inp.dispatchEvent(new Event('change',{bubbles:true}));
+      return document.querySelector('#toast').textContent||'';
+    `);
+    check('超过 10 MiB 的导入文件被直接拒绝', oversizeToast.includes('10 MiB'), oversizeToast);
 
     // 合法备份往返：毫秒精度不丢（逐条比对语义字段）
     const roundTrip = await A.eval(`
@@ -1074,6 +1127,112 @@ async function run() {
     const PR = JSON.parse(protoRes);
     check('特殊名字（__proto__ / constructor）能正常取色', /^#[0-9a-f]{6}$/.test(PR.a) && /^#[0-9a-f]{6}$/.test(PR.b), protoRes);
     check('特殊名字没有污染原型', PR.polluted === undefined && PR.keys === 0, protoRes);
+
+    /* ---------------- J. 本轮修复的真实交互与时钟边界 ---------------- */
+    section('J. 统计日期、导入失败、旧暂停会话与校时');
+    await A.close();
+    try{await B.close()}catch(e){ /* H 组已经关闭 B。 */ }
+    const J=await newPage(browser,url,{initScript:`
+      window.__wallShift=0;
+      const RealDate=Date;
+      window.Date=class extends RealDate{
+        constructor(...args){super(...(args.length?args:[RealDate.now()+window.__wallShift]))}
+        static now(){return RealDate.now()+window.__wallShift}
+      };
+    `});
+    const midnightRefresh=JSON.parse(await J.eval(`
+      localStorage.clear();sessions=[];ongoing=null;
+      const t=Date.now(),d=new Date();
+      sessions=[{id:'calendar',taskName:'日期测试',startTs:t-60000,endTs:t,durationMs:60000,date:dateStr(d)}];
+      switchTab('stats');
+      const before=document.querySelector('#ov-grid .today .val').textContent;
+      window.__wallShift=86400000;
+      document.dispatchEvent(new Event('visibilitychange'));
+      const resumed=document.querySelector('#ov-grid .today .val').textContent;
+      const yesterday=document.querySelector('#rec-list').textContent.includes('昨天');
+      window.__wallShift=2*86400000;
+      return new Promise(resolve=>setTimeout(()=>resolve(JSON.stringify({before,resumed,yesterday,
+        key:statsRenderedCalendar,current:statsCalendarKey()})),600));
+    `));
+    check('跨午夜返回前台：今日统计自动归零',midnightRefresh.before==='1:00'&&midnightRefresh.resumed==='0:00',JSON.stringify(midnightRefresh));
+    check('跨午夜返回前台：记录标签同步为昨天',midnightRefresh.yesterday===true);
+    check('页面持续打开跨日：自动刷新日期口径',midnightRefresh.key===midnightRefresh.current);
+    await J.eval('window.__wallShift=0;return true');
+    await browser.send('Emulation.setTimezoneOverride',{timezoneId:'Pacific/Kiritimati'},J.sessionId);
+    await sleep(600);
+    check('时区变化后统计日历口径自动刷新',await J.eval('return statsRenderedCalendar===statsCalendarKey()'));
+    await browser.send('Emulation.setTimezoneOverride',{timezoneId:''},J.sessionId);
+
+    const failedImport=JSON.parse(await J.eval(`
+      localStorage.clear();sessions=[];recentTasks=[];ongoing=null;
+      const t=Date.now();
+      const text=JSON.stringify({sessions:[{id:'retry-import',taskName:'导入测试',startTs:t-60000,endTs:t,durationMs:60000}],recentTasks:['新快捷']});
+      openImport();document.querySelector('#import-text').value=text;
+      window.__originalSetItem=Storage.prototype.setItem;
+      Storage.prototype.setItem=function(k,v){if(k==='tomato.sessions')throw new Error('QuotaExceededError');return window.__originalSetItem.call(this,k,v)};
+      return doImport().then(()=>JSON.stringify({msg:document.querySelector('#toast').textContent,
+        open:dlgImport.classList.contains('open'),same:document.querySelector('#import-text').value===text,
+        count:readSessions().length,recent:readRecent()}));
+    `));
+    check('导入写盘失败：明确提示失败及保留备份',failedImport.msg.includes('导入失败')&&failedImport.msg.includes('保留备份'),failedImport.msg);
+    check('导入写盘失败：窗口和原文保留可重试',failedImport.open&&failedImport.same);
+    check('导入写盘失败：记录与快捷事项均未假装成功',failedImport.count===0&&failedImport.recent.length===0);
+    const partialImport=JSON.parse(await J.eval(`
+      Storage.prototype.setItem=function(k,v){if(k==='tomato.recentTasks')throw new Error('QuotaExceededError');return window.__originalSetItem.call(this,k,v)};
+      return doImport().then(()=>JSON.stringify({msg:document.querySelector('#toast').textContent,
+        count:readSessions().length,open:dlgImport.classList.contains('open')}));
+    `));
+    check('记录已保存但快捷失败：准确说明部分成功',partialImport.count===1&&partialImport.msg.includes('专注记录已保存，快捷事项未能保存'),partialImport.msg);
+    check('部分快捷失败：保留输入便于重试',partialImport.open);
+    const retryImport=JSON.parse(await J.eval(`
+      Storage.prototype.setItem=window.__originalSetItem;
+      return doImport().then(()=>JSON.stringify({count:readSessions().length,recent:readRecent(),open:dlgImport.classList.contains('open')}));
+    `));
+    check('失败后重试导入不重复记账，快捷事项恢复',retryImport.count===1&&retryImport.recent.includes('新快捷')&&!retryImport.open,JSON.stringify(retryImport));
+
+    const legacyPause=JSON.parse(await J.eval(`
+      localStorage.clear();sessions=[];ongoing=null;
+      const end=Date.now(),start=end-600000;
+      localStorage.setItem('tomato.ongoing',JSON.stringify({sessionId:'legacy-pause',taskName:'旧会话',startTs:start,pausedAt:end-60000,pausedAccumMs:60000}));
+      ongoing=readOngoing();
+      return togglePause().then(()=>togglePause()).then(()=>{
+        const disk=readOngoing(),built=buildSegments(disk);
+        return JSON.stringify({hasLog:Object.prototype.hasOwnProperty.call(disk,'pauseLog'),shown:elapsedMs(),recorded:built.dur,
+          count:built.segments.length,date:built.segments[0].date,startDate:dateStr(new Date(start))});
+      });
+    `));
+    check('旧会话继续暂停后仍保留缺明细状态',legacyPause.hasLog===false);
+    check('旧会话显示与记账一致且扣除全部暂停',legacyPause.shown===legacyPause.recorded&&Math.abs(legacyPause.recorded-480000)<100,JSON.stringify(legacyPause));
+    check('旧会话按开始日期单条保存',legacyPause.count===1&&legacyPause.date===legacyPause.startDate);
+
+    await J.eval(`localStorage.clear();ongoing=null;taskInput.value='校时测试';return goStart()`);
+    await sleep(1100);
+    const clockJump=JSON.parse(await J.eval(`
+      const before=elapsedMs();window.__wallShift=3600000;renderRunTime();
+      const after=elapsedMs(),warning=document.querySelector('#clock-warning').textContent;
+      return togglePause().then(()=>JSON.stringify({before,after,warning,built:buildSegments(ongoing).dur,shown:elapsedMs()}));
+    `));
+    check('前台系统时间前调一小时：专注时长不跳变',Math.abs(clockJump.after-clockJump.before)<100,JSON.stringify(clockJump));
+    check('检测校时后显示持续核对提示',clockJump.warning.includes('系统时间调整'));
+    check('校时后暂停显示与最终分段时长一致',clockJump.shown===clockJump.built);
+    await P.finish(J);
+    const reviewed=await P.sessions(J);
+    check('校时记录保存核对标记且可备份往返',reviewed.length===1&&reviewed[0].clockReview===true&&await J.eval('return normalizeSession(readSessions()[0]).clockReview===true'));
+    await J.eval('window.__wallShift=0;return true');
+
+    const Core=require(path.join(WWW,'focus-clock.js'));
+    const t=1700000000000;
+    const sample=(mono,wall,epoch='boot:1')=>({source:'android',epoch,monoMs:mono,wallMs:wall});
+    const measured={startTs:t,pausedAt:null,pausedAccumMs:0,clock:Core.create(t,sample(100000,t))};
+    check('Android计时核心包含锁屏休眠时间',Core.elapsed(measured,sample(3700000,t+3600000))===3600000);
+    check('Android计时核心不受墙钟回拨影响',Core.elapsed(measured,sample(3700000,t-3600000))===3600000&&measured.clock.adjusted);
+    Core.checkpoint(measured,sample(3700000,t-3600000));
+    check('同次开机进程重建可沿用单调基准',Core.elapsed(measured,sample(3760000,t-3540000))===3660000);
+    const rebootValue=Core.elapsed(measured,sample(5000000,t-3480000,'boot:2'));
+    check('设备重启即使新uptime更大也会明确标记估算',measured.clock.uncertain===true&&rebootValue===3720000);
+    const noSample={startTs:t,pausedAt:t+60000,pausedAccumMs:0,clock:Core.create(t,sample(100000,t))};
+    check('计时源改变时保留暂停时长并标记不确定',Core.elapsed(noSample,{source:'browser',epoch:'browser',monoMs:t,wallMs:t+120000})===60000&&noSample.clock.uncertain);
+    await J.close();
   } finally {
     try { browser.close(); } catch (e) {}
     try { proc.kill(); } catch (e) {}

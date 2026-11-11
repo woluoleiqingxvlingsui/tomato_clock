@@ -39,11 +39,6 @@ function Write-Warn2($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 Write-Host ''
 Write-Host '⚠ 本脚本会把签名密钥上传到 GitHub Actions secrets。' -ForegroundColor Yellow
 Write-Host '  自动发布流水线当前是关闭的，跑它没有任何好处。' -ForegroundColor Yellow
-$answer = Read-Host '确实要继续吗？输入 UPLOAD 确认'
-if ($answer -ne 'UPLOAD') {
-  Write-Host '已取消，没有上传任何内容。'
-  return
-}
 
 Write-Step '检查本地签名文件'
 if (-not (Test-Path $KsFile)) {
@@ -74,14 +69,30 @@ if (-not $gh) {
   throw '缺少 gh，无法自动上传 secret'
 }
 
+Write-Step '识别并校验目标仓库'
 if (-not $Repo) {
-  Write-Step '识别仓库'
   $Repo = (& $gh.Source repo view --json nameWithOwner --jq .nameWithOwner 2>$null)
-  if (-not $Repo) {
+  if ($LASTEXITCODE -ne 0 -or -not $Repo) {
     throw '无法自动确定仓库名，请用 -Repo <owner/name> 指定'
   }
 }
-Write-Host "  仓库：$Repo"
+$Repo = $Repo.Trim()
+if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+  throw "目标仓库格式无效：$Repo（应为 owner/name）"
+}
+$canonicalRepo = (& $gh.Source repo view $Repo --json nameWithOwner --jq .nameWithOwner 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $canonicalRepo) {
+  throw "无法通过 gh 校验目标仓库：$Repo；请确认仓库存在且当前账号有权访问"
+}
+$canonicalRepo = $canonicalRepo.Trim()
+if ($canonicalRepo -ine $Repo) { throw "目标仓库校验结果不一致：$Repo -> $canonicalRepo" }
+$Repo = $canonicalRepo
+Write-Host "  目标仓库：$Repo" -ForegroundColor Yellow
+$answer = Read-Host "最终确认：请输入 UPLOAD $Repo"
+if ($answer -cne "UPLOAD $Repo") {
+  Write-Host '已取消，没有上传任何内容。'
+  return
+}
 
 # ---------------------------------------------------------------- 上传
 Write-Step '上传 4 个 secret'
@@ -91,7 +102,7 @@ $b64 | & $gh.Source secret set KEYSTORE_BASE64 --repo $Repo
 if ($LASTEXITCODE -ne 0) { throw '上传 KEYSTORE_BASE64 失败' }
 Write-Host '  [1/4] KEYSTORE_BASE64'
 
-& $gh.Source secret set KEYSTORE_PASSWORD --body $kv['storePassword'] --repo $Repo
+$kv['storePassword'] | & $gh.Source secret set KEYSTORE_PASSWORD --repo $Repo
 if ($LASTEXITCODE -ne 0) { throw '上传 KEYSTORE_PASSWORD 失败' }
 Write-Host '  [2/4] KEYSTORE_PASSWORD'
 
@@ -99,18 +110,13 @@ Write-Host '  [2/4] KEYSTORE_PASSWORD'
 if ($LASTEXITCODE -ne 0) { throw '上传 KEY_ALIAS 失败' }
 Write-Host '  [3/4] KEY_ALIAS'
 
-& $gh.Source secret set KEY_PASSWORD --body $kv['keyPassword'] --repo $Repo
+$kv['keyPassword'] | & $gh.Source secret set KEY_PASSWORD --repo $Repo
 if ($LASTEXITCODE -ne 0) { throw '上传 KEY_PASSWORD 失败' }
 Write-Host '  [4/4] KEY_PASSWORD'
 
 Write-Step '完成'
-Write-Host '已上传 4 个 secret。接下来在仓库根目录执行：' -ForegroundColor Green
-Write-Host ''
-Write-Host '  git tag -a v1.4.0 -m "番茄钟 v1.4.0"'
-Write-Host '  git push origin v1.4.0'
-Write-Host ''
-Write-Host '推上去后 GitHub Actions 会自动打包并挂到 Release 页面：'
-Write-Host '  https://github.com/' + $Repo + '/releases'
+Write-Host '已上传 4 个 secret。' -ForegroundColor Green
+Write-Warn2 '自动发布 workflow 当前仍然关闭；本次仅上传 secrets，不会触发打包或 Release。'
 Write-Host ''
 Write-Warn2 '本地 app\android\tomato-release.keystore 和 keystore.properties 仍然要自己备份：'
 Write-Warn2 'CI 里的副本丢了，本地这份还在；两份都丢就只能卸载重装（旧记录会清空）。'

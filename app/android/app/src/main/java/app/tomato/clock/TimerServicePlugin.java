@@ -105,6 +105,11 @@ public class TimerServicePlugin extends Plugin {
         putLongExtra(i, TimerNotifyService.EXTRA_START_TS, call.getString("startTs"));
         putLongExtra(i, TimerNotifyService.EXTRA_PAUSED_ACCUM, call.getString("pausedAccumMs"));
         putLongExtra(i, TimerNotifyService.EXTRA_PAUSED_AT, call.getString("pausedAt"));
+        putLongExtra(i, TimerNotifyService.EXTRA_ELAPSED, call.getString("elapsedMs"));
+        putLongExtra(i, TimerNotifyService.EXTRA_REALTIME, call.getString("sampleRealtime"));
+        String epoch = call.getString("clockEpoch");
+        if (epoch != null && !epoch.isEmpty()) i.putExtra(TimerNotifyService.EXTRA_EPOCH, epoch);
+        i.putExtra(TimerNotifyService.EXTRA_REVIEW, Boolean.TRUE.equals(call.getBoolean("clockReview")));
         try {
             ContextCompat.startForegroundService(getContext(), i);
             return true;

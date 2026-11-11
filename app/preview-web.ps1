@@ -16,7 +16,15 @@ if (-not (Test-Path $Index)) { throw "找不到 $Index" }
 function Find-Python {
   foreach ($c in @('python', 'python3', 'py')) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if (-not $cmd -or -not $cmd.Source) { continue }
+    # Windows Store 的 python.exe 别名虽然存在，却不能运行模块；必须逐个实际探测。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $probe = (& $cmd.Source -c 'import http.server; print("HTTP_SERVER_OK")' 2>$null) -join ''
+    $probeExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($probeExit -eq 0 -and $probe -match 'HTTP_SERVER_OK') { return $cmd.Source }
+    Write-Host "  跳过不可用的 Python：$($cmd.Source)" -ForegroundColor Yellow
   }
   return $null
 }
@@ -49,10 +57,23 @@ Write-Host "  服务目录：$WwwDir"
 Write-Host "  浏览器按 F12 → Ctrl+Shift+M 切手机视口；统计页要切底部「统计」Tab 才有内容。"
 Write-Host "  停止服务：在此窗口按 Ctrl+C，或直接关掉本窗口。`n"
 
-Start-Sleep -Milliseconds 600
-Start-Process $url
-
-Push-Location $WwwDir
+$server = $null
 try {
-  & $py -m http.server $port --bind 127.0.0.1
-} finally { Pop-Location }
+  $server = Start-Process -FilePath $py -ArgumentList @('-m', 'http.server', "$port", '--bind', '127.0.0.1') `
+    -WorkingDirectory $WwwDir -PassThru -WindowStyle Hidden
+  $ready = $false
+  for ($i = 0; $i -lt 50; $i++) {
+    if ($server.HasExited) { throw "Python http.server 启动失败（退出码 $($server.ExitCode)）" }
+    if (Test-PortInUse $port) { $ready = $true; break }
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not $ready) { throw 'Python http.server 未在 5 秒内监听回环端口' }
+
+  # 只有服务已确认可连接才打开浏览器；浏览器启动失败也会走 finally 清理服务。
+  Start-Process $url
+  Wait-Process -Id $server.Id
+} finally {
+  if ($server -and -not $server.HasExited) {
+    try { $server.Kill(); $server.WaitForExit() } catch {}
+  }
+}

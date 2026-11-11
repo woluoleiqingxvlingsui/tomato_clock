@@ -31,6 +31,8 @@ import java.nio.charset.StandardCharsets;
 @CapacitorPlugin(name = "DataTransfer")
 public class DataTransferPlugin extends Plugin {
 
+    private static final int MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
     /** 导出内容要跨一次 activity 往返，先存着，回调里再写盘 */
     private String pendingJson;
 
@@ -138,11 +140,16 @@ public class DataTransferPlugin extends Plugin {
             // 不能用 readAllBytes()：那是 API 33+ 才有的方法，本项目 minSdk 23
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
+            int totalBytes = 0;
             int n;
-            while ((n = is.read(chunk)) > 0) {
+            while ((n = is.read(chunk)) != -1) {
+                totalBytes += n;
+                if (totalBytes > MAX_IMPORT_BYTES) {
+                    throw new java.io.IOException("file exceeds 10 MiB limit");
+                }
                 buf.write(chunk, 0, n);
             }
-            String text = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            String text = buf.toString(StandardCharsets.UTF_8.name());
             JSObject ret = new JSObject();
             ret.put("json", text);
             call.resolve(ret);
